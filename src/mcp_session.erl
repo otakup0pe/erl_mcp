@@ -25,7 +25,9 @@
     pending_requests = #{} :: #{integer() => {pid(), reference()}},
     handlers :: map(),
     transport_pid :: undefined | pid(),
-    progress_handlers = #{} :: #{binary() => pid()}
+    progress_handlers = #{} :: #{binary() => pid()},
+    %% In-flight handler processes: MonitorRef => {From, RequestId, Ref, Pid}
+    in_flight = #{} :: #{reference() => {term(), integer(), reference(), pid()}}
 }).
 
 %%--------------------------------------------------------------------
@@ -40,7 +42,7 @@ start_link(Name, Opts) ->
 
 -spec handle_message(pid(), term()) -> ok | {reply, term()}.
 handle_message(Session, Message) ->
-    gen_server:call(Session, {handle_message, Message}).
+    gen_server:call(Session, {handle_message, Message}, 300000).
 
 -spec send_request(pid(), binary(), map()) ->
     {ok, reference()} | {error, term()}.
@@ -79,12 +81,15 @@ init(Opts) ->
         transport_pid = TransportPid
     }}.
 
-handle_call({handle_message, Message}, _From, State) ->
-    case dispatch(Message, State) of
+handle_call({handle_message, Message}, From, State) ->
+    case dispatch(Message, From, State) of
         {reply, Reply, NewState} ->
             {reply, {reply, Reply}, NewState};
         {noreply, NewState} ->
             {reply, ok, NewState};
+        {noreply_async, NewState} ->
+            %% Handler spawned async -- reply comes via handle_info
+            {noreply, NewState};
         {error, Reason, NewState} ->
             {reply, {error, Reason}, NewState}
     end;
@@ -133,6 +138,45 @@ handle_cast({send_notification, Notification}, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info({handler_result, Ref, Result}, State) ->
+    case find_in_flight_by_ref(Ref, State#state.in_flight) of
+        {ok, MonRef, From, Id} ->
+            demonitor(MonRef, [flush]),
+            Reply = case Result of
+                {ok, ResultMap} ->
+                    mcp_jsonrpc:response(Id, ResultMap);
+                {error, Code, Msg} ->
+                    mcp_jsonrpc:error_response(Id, Code, Msg)
+            end,
+            gen_server:reply(From, {reply, Reply}),
+            Remaining = maps:remove(MonRef, State#state.in_flight),
+            {noreply, State#state{in_flight = Remaining}};
+        error ->
+            %% Already cancelled or unknown
+            {noreply, State}
+    end;
+handle_info({'DOWN', MonRef, process, _Pid, normal}, State) ->
+    %% Normal exit after sending result -- just clean up if still tracked
+    case maps:take(MonRef, State#state.in_flight) of
+        {{From, Id, _Ref, _HPid}, Remaining} ->
+            Reply = mcp_jsonrpc:error_response(
+                Id, ?INTERNAL_ERROR, <<"Handler exited without result">>),
+            gen_server:reply(From, {reply, Reply}),
+            {noreply, State#state{in_flight = Remaining}};
+        error ->
+            {noreply, State}
+    end;
+handle_info({'DOWN', MonRef, process, _Pid, Reason}, State) ->
+    case maps:take(MonRef, State#state.in_flight) of
+        {{From, Id, _Ref, _HPid}, Remaining} ->
+            ErrMsg = iolist_to_binary(io_lib:format("~p", [Reason])),
+            Reply = mcp_jsonrpc:error_response(
+                Id, ?INTERNAL_ERROR, ErrMsg),
+            gen_server:reply(From, {reply, Reply}),
+            {noreply, State#state{in_flight = Remaining}};
+        error ->
+            {noreply, State}
+    end;
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -144,60 +188,81 @@ terminate(_Reason, _State) ->
 %%--------------------------------------------------------------------
 
 dispatch(#jsonrpc_request{method = <<"initialize">>, params = Params, id = Id},
-         #state{role = server, status = uninitialized} = State) ->
+         _From, #state{role = server, status = uninitialized} = State) ->
     handle_initialize(Id, Params, State);
 
 dispatch(#jsonrpc_notification{method = <<"notifications/initialized">>},
-         #state{role = server, status = initialized} = State) ->
+         _From, #state{role = server, status = initialized} = State) ->
     %% Client confirmed initialization. Session is fully ready.
     {noreply, State};
 
-dispatch(#jsonrpc_request{method = <<"ping">>, id = Id}, State) ->
+dispatch(#jsonrpc_request{method = <<"ping">>, id = Id}, _From, State) ->
     Reply = mcp_jsonrpc:response(Id, #{}),
     {reply, Reply, State};
 
 dispatch(#jsonrpc_request{method = <<"notifications/cancelled">>,
                            params = Params},
-         State) ->
+         _From, State) ->
     handle_cancellation(Params, State);
 
 dispatch(#jsonrpc_notification{method = <<"notifications/progress">>,
                                 params = Params},
-         State) ->
+         _From, State) ->
     handle_progress(Params, State);
 
-dispatch(#jsonrpc_response{id = Id} = Resp, State) ->
+dispatch(#jsonrpc_response{id = Id} = Resp, _From, State) ->
     handle_pending_response(Id, {ok, Resp}, State);
 
-dispatch(#jsonrpc_error{id = Id} = Err, State) ->
+dispatch(#jsonrpc_error{id = Id} = Err, _From, State) ->
     handle_pending_response(Id, {error, Err}, State);
 
-dispatch(#jsonrpc_request{method = Method, id = Id, params = Params}, State) ->
+dispatch(#jsonrpc_request{method = Method, id = Id, params = Params},
+         From, State) ->
     case maps:get(Method, State#state.handlers, undefined) of
         undefined ->
             ErrResp = mcp_jsonrpc:error_response(
                 Id, ?METHOD_NOT_FOUND, <<"Method not found">>),
             {reply, ErrResp, State};
         Handler when is_function(Handler, 2) ->
-            case Handler(Params, State) of
-                {ok, Result} ->
-                    Reply = mcp_jsonrpc:response(Id, Result),
-                    {reply, Reply, State};
-                {ok, Result, NewState} ->
-                    Reply = mcp_jsonrpc:response(Id, Result),
-                    {reply, Reply, NewState};
-                {error, Code, Msg} ->
-                    ErrResp = mcp_jsonrpc:error_response(Id, Code, Msg),
-                    {reply, ErrResp, State}
-            end
+            spawn_handler(Handler, Params, From, Id, State)
     end;
 
-dispatch(#jsonrpc_notification{}, State) ->
+dispatch(#jsonrpc_notification{}, _From, State) ->
     %% Unknown notifications are silently ignored per spec
     {noreply, State};
 
-dispatch(_, State) ->
+dispatch(_, _From, State) ->
     {error, invalid_message, State}.
+
+%%--------------------------------------------------------------------
+%% Async handler execution
+%%--------------------------------------------------------------------
+
+spawn_handler(Handler, Params, From, Id, State) ->
+    SessionPid = self(),
+    Ref = make_ref(),
+    {Pid, MonRef} = spawn_monitor(fun() ->
+        %% Handler is a protocol-level fun (e.g. handle_tools_call)
+        %% that already returns {ok, Map} | {error, Code, Msg}
+        %% and has its own try/catch for tool-level crashes.
+        Result = try Handler(Params, State) of
+            {ok, ResultMap} ->
+                {ok, ResultMap};
+            {ok, ResultMap, _NewState} ->
+                {ok, ResultMap};
+            {error, Code, Msg} ->
+                {error, Code, Msg}
+        catch
+            _:Reason ->
+                ErrMsg = iolist_to_binary(
+                    io_lib:format("~p", [Reason])),
+                {error, ?INTERNAL_ERROR, ErrMsg}
+        end,
+        SessionPid ! {handler_result, Ref, Result}
+    end),
+    InFlight = maps:put(MonRef, {From, Id, Ref, Pid},
+                        State#state.in_flight),
+    {noreply_async, State#state{in_flight = InFlight}}.
 
 %%--------------------------------------------------------------------
 %% Initialize handshake (server side)
@@ -251,10 +316,26 @@ handle_initialize(Id, Params, State) ->
 handle_cancellation(Params, State) ->
     RequestId = maps:get(<<"requestId">>, Params, undefined),
     _Reason = maps:get(<<"reason">>, Params, undefined),
+    %% Check pending outbound requests first
     case maps:take(RequestId, State#state.pending_requests) of
         {{Pid, _Ref}, Remaining} ->
             Pid ! {mcp_cancelled, RequestId},
             {noreply, State#state{pending_requests = Remaining}};
+        error ->
+            %% Check in-flight handler processes
+            cancel_in_flight(RequestId, State)
+    end.
+
+cancel_in_flight(RequestId, State) ->
+    case find_in_flight_by_id(RequestId, State#state.in_flight) of
+        {ok, MonRef, From, HPid} ->
+            demonitor(MonRef, [flush]),
+            exit(HPid, cancelled),
+            ErrResp = mcp_jsonrpc:error_response(
+                RequestId, ?REQUEST_CANCELLED, <<"Request cancelled">>),
+            gen_server:reply(From, {reply, ErrResp}),
+            Remaining = maps:remove(MonRef, State#state.in_flight),
+            {noreply, State#state{in_flight = Remaining}};
         error ->
             {noreply, State}
     end.
@@ -300,6 +381,29 @@ send_to_transport(Message, #state{transport_pid = Pid}) ->
         {error, _} = Err ->
             Err
     end.
+
+%%--------------------------------------------------------------------
+%% Internal: in-flight handler lookup
+%%--------------------------------------------------------------------
+
+%% Find in-flight entry by the handler's correlation Ref
+find_in_flight_by_ref(Ref, InFlight) ->
+    Result = maps:fold(fun
+        (MonRef, {From, Id, R, _Pid}, error) when R =:= Ref ->
+            {ok, MonRef, From, Id};
+        (_MonRef, _Val, Acc) ->
+            Acc
+    end, error, InFlight),
+    Result.
+
+%% Find in-flight entry by JSON-RPC request Id
+find_in_flight_by_id(RequestId, InFlight) ->
+    maps:fold(fun
+        (MonRef, {From, Id, _Ref, Pid}, error) when Id =:= RequestId ->
+            {ok, MonRef, From, Pid};
+        (_MonRef, _Val, Acc) ->
+            Acc
+    end, error, InFlight).
 
 %%--------------------------------------------------------------------
 %% Internal

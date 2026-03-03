@@ -11,6 +11,7 @@
 -define(INVALID_PARAMS, -32602).
 -define(INTERNAL_ERROR, -32603).
 -define(RESOURCE_NOT_FOUND, -32002).
+-define(REQUEST_CANCELLED, -32800).
 
 %% JSON-RPC message types
 -record(jsonrpc_request, {
