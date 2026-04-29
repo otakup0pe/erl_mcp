@@ -1,4 +1,6 @@
 -module(mcp_sup).
+%% @private
+%% OTP infrastructure -- not part of the public API.
 -behaviour(supervisor).
 
 -export([start_link/0]).

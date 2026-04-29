@@ -1,16 +1,16 @@
 -module(erl_mcp_client).
--behaviour(gen_statem).
 
-%% MCP client: embeddable gen_statem that speaks JSON-RPC 2.0 to an
-%% external MCP server over a pluggable transport. Consumers place
-%% the child under their own supervisor via child_spec/1.
+%% @doc MCP client as an embeddable gen_statem.
 %%
-%% States:
-%%   connecting   - transport connect + initialize request
-%%   initialising - waiting for initialize response
-%%   ready        - handshake complete, tool discovery + calls allowed
-%%   reconnecting - lost/invalidated session; will reinitialise
-%%   failed       - startup or fatal error; terminal for this instance
+%% Speaks JSON-RPC 2.0 to an external MCP server over a pluggable
+%% transport. Place under your own supervisor via `child_spec/1'.
+%%
+%% Lifecycle states: `connecting', `initialising', `ready',
+%% `reconnecting', `failed'. Tool calls and listings are only
+%% accepted in the `ready' state; other states return
+%% `{error, not_ready}'.
+
+-behaviour(gen_statem).
 
 -include("mcp.hrl").
 -include("mcp_client.hrl").
@@ -51,10 +51,10 @@
     initialize_from :: undefined | gen_statem:from()
 }).
 
-%%--------------------------------------------------------------------
-%% Public API
-%%--------------------------------------------------------------------
-
+%% @doc Return a supervisor child spec for this client.
+%%
+%% `Config' is the same map accepted by `start_link/1', optionally
+%% including an `id' key for the child id (defaults to `erl_mcp_client').
 -spec child_spec(map()) -> supervisor:child_spec().
 child_spec(Config) ->
     Id = maps:get(id, Config, ?MODULE),
@@ -67,6 +67,10 @@ child_spec(Config) ->
         modules => [?MODULE]
     }.
 
+%% @doc Start the client process.
+%%
+%% `Config' keys: `transport' (module), `protocol_version', `tool_prefix',
+%% `capabilities', `client_info', `telemetry', `name' (registration tuple).
 -spec start_link(map()) -> {ok, pid()} | {error, term()}.
 start_link(Config) ->
     case maps:get(name, Config, undefined) of
@@ -80,36 +84,41 @@ start_link(Config) ->
             gen_statem:start_link(Name, ?MODULE, Config, [])
     end.
 
+%% @doc Call a remote tool by name with the given arguments.
+%%
+%% Blocks until the server responds or `Timeout' (ms) elapses.
+%% The tool name may be prefixed; prefix stripping is automatic.
 -spec call(pid() | atom(), binary(), map(), timeout()) ->
     {ok, map()} | {error, term()}.
 call(Ref, ToolName, Arguments, Timeout) ->
     gen_statem:call(Ref, {tools_call, ToolName, Arguments, Timeout},
                     infinity).
 
+%% @doc List tools advertised by the remote server (cached after first call).
 -spec list_tools(pid() | atom()) -> {ok, [#mcp_client_tool{}]} | {error, term()}.
 list_tools(Ref) ->
     gen_statem:call(Ref, list_tools, infinity).
 
+%% @doc Force a fresh `tools/list' request, replacing the cached tool list.
 -spec refresh_tools(pid() | atom()) ->
     {ok, [#mcp_client_tool{}]} | {error, term()}.
 refresh_tools(Ref) ->
     gen_statem:call(Ref, refresh_tools, infinity).
 
+%% @doc Hot-swap the transport authentication credential.
 -spec update_auth(pid() | atom(), term()) -> ok | {error, term()}.
 update_auth(Ref, NewAuth) ->
     gen_statem:call(Ref, {update_auth, NewAuth}, infinity).
 
+%% @doc Return a status snapshot (state, server info, tool count, last error).
 -spec status(pid() | atom()) -> map().
 status(Ref) ->
     gen_statem:call(Ref, status, infinity).
 
+%% @doc Stop the client, closing the transport connection.
 -spec stop(pid() | atom()) -> ok.
 stop(Ref) ->
     gen_statem:stop(Ref).
-
-%%--------------------------------------------------------------------
-%% gen_statem callbacks
-%%--------------------------------------------------------------------
 
 callback_mode() -> state_functions.
 
@@ -138,10 +147,6 @@ terminate(_Reason, _State, Data) ->
 
 code_change(_OldVsn, State, Data, _Extra) ->
     {ok, State, Data}.
-
-%%--------------------------------------------------------------------
-%% State: connecting
-%%--------------------------------------------------------------------
 
 connecting(internal, connect, #data{transport_mod = Mod,
                                      config = Config0,
@@ -483,7 +488,6 @@ decode_response(Body, Data) ->
 
 handle_inbound_notification(<<"notifications/tools/list_changed">>, _P,
                             _Data) ->
-    %% placeholder for future expansion on tool list cache strategy
     ok;
 handle_inbound_notification(_Method, _Params, _Data) ->
     ok.
@@ -513,9 +517,9 @@ status_map(State, Data) ->
 
 emit(#data{telemetry = undefined}, _Event) -> ok;
 emit(#data{telemetry = Fun}, Event) when is_function(Fun, 1) ->
-    _ = spawn(fun() -> Fun(Event) end),
+    Fun(Event),
     ok;
 emit(#data{telemetry = {Mod, Fun}}, Event) ->
-    _ = spawn(Mod, Fun, [Event]),
+    Mod:Fun(Event),
     ok;
 emit(_, _) -> ok.

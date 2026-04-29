@@ -1,6 +1,6 @@
 -module(mcp_jsonrpc).
-
-%% JSON-RPC 2.0 encoding and decoding for MCP.
+%% @private
+%% Internal module -- JSON-RPC 2.0 wire format for MCP sessions.
 
 -include("mcp.hrl").
 
@@ -8,10 +8,6 @@
 -export([request/3, response/2, error_response/3, error_response/4,
          notification/2, batch/1]).
 -export([error_code/1, error_atom/1]).
-
-%%--------------------------------------------------------------------
-%% Builder functions
-%%--------------------------------------------------------------------
 
 -spec request(binary() | integer(), binary(), map()) -> #jsonrpc_request{}.
 request(Id, Method, Params) ->
@@ -41,10 +37,6 @@ batch([]) ->
     {error, empty_batch};
 batch(Messages) when is_list(Messages) ->
     {batch, Messages}.
-
-%%--------------------------------------------------------------------
-%% Encoding
-%%--------------------------------------------------------------------
 
 -spec encode(term()) -> {ok, binary()} | {error, term()}.
 encode({batch, Messages}) when is_list(Messages) ->
@@ -94,10 +86,6 @@ encode_message(#jsonrpc_notification{method = Method, params = Params}) ->
         _ -> Base#{<<"params">> => Params}
     end.
 
-%%--------------------------------------------------------------------
-%% Decoding
-%%--------------------------------------------------------------------
-
 -spec decode(binary()) -> {ok, term()} | {error, term()}.
 decode(Bin) ->
     case mcp_json:decode(Bin) of
@@ -129,22 +117,16 @@ decode_message(#{<<"jsonrpc">> := <<"2.0">>} = Map) ->
     HasError = maps:is_key(<<"error">>, Map),
     case {HasId, HasMethod, HasResult, HasError} of
         {true, true, false, false} ->
-            %% Request
             decode_request(Map);
         {true, false, true, false} ->
-            %% Response
             decode_response(Map);
         {true, false, false, true} ->
-            %% Error response
             decode_error(Map);
         {false, true, false, false} ->
-            %% Notification (no id)
             decode_notification(Map);
-        %% null id error response
         {false, false, false, true} ->
             case maps:get(<<"id">>, Map, undefined) of
                 undefined ->
-                    %% Check if id is explicitly null
                     decode_error_null_id(Map);
                 _ ->
                     {error, invalid_json_rpc}
@@ -209,10 +191,6 @@ decode_notification(Map) ->
             {error, invalid_notification_fields}
     end.
 
-%%--------------------------------------------------------------------
-%% Error code mapping
-%%--------------------------------------------------------------------
-
 -spec error_code(atom()) -> integer().
 error_code(parse_error) -> ?PARSE_ERROR;
 error_code(invalid_request) -> ?INVALID_REQUEST;
@@ -229,10 +207,6 @@ error_atom(?INVALID_PARAMS) -> invalid_params;
 error_atom(?INTERNAL_ERROR) -> internal_error;
 error_atom(?RESOURCE_NOT_FOUND) -> resource_not_found;
 error_atom(_) -> unknown_error.
-
-%%--------------------------------------------------------------------
-%% Internal
-%%--------------------------------------------------------------------
 
 is_valid_id(Id) when is_binary(Id) -> true;
 is_valid_id(Id) when is_integer(Id) -> true;

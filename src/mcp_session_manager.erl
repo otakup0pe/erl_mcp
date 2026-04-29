@@ -1,8 +1,7 @@
 -module(mcp_session_manager).
+%% @private
+%% Internal module -- session lifecycle tracking for {@link mcp_http_handler}.
 -behaviour(gen_server).
-
-%% Manages MCP sessions. Creates, looks up, and removes sessions.
-%% Tracks sessions by Mcp-Session-Id for HTTP transport.
 
 -export([start_link/0]).
 -export([create_session/1, get_session/1, remove_session/1, list_sessions/0]).
@@ -13,10 +12,6 @@
     sessions = #{} :: #{binary() => pid()},
     monitors = #{} :: #{reference() => binary()}
 }).
-
-%%--------------------------------------------------------------------
-%% API
-%%--------------------------------------------------------------------
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -37,16 +32,13 @@ remove_session(SessionId) ->
 list_sessions() ->
     gen_server:call(?MODULE, list_sessions).
 
-%%--------------------------------------------------------------------
-%% gen_server callbacks
-%%--------------------------------------------------------------------
-
 init([]) ->
     {ok, #state{}}.
 
 handle_call({create_session, Opts}, _From, State) ->
     case mcp_session:start_link(Opts) of
         {ok, Pid} ->
+            unlink(Pid),
             Info = mcp_session:get_state(Pid),
             SessionId = maps:get(id, Info),
             MonRef = monitor(process, Pid),
@@ -67,7 +59,7 @@ handle_call({get_session, SessionId}, _From, State) ->
 handle_call({remove_session, SessionId}, _From, State) ->
     case maps:take(SessionId, State#state.sessions) of
         {Pid, Sessions} ->
-            gen_server:stop(Pid, normal, 5000),
+            gen_server:stop(Pid, shutdown, 5000),
             NewState = State#state{sessions = Sessions},
             {reply, ok, NewState};
         error ->

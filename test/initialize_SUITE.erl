@@ -11,7 +11,8 @@
     server_returns_protocol_version/1,
     server_returns_server_info/1,
     server_rejects_double_initialize/1,
-    client_version_negotiation/1
+    client_version_negotiation_known/1,
+    client_version_negotiation_unknown/1
 ]).
 
 all() -> [
@@ -20,7 +21,8 @@ all() -> [
     server_returns_protocol_version,
     server_returns_server_info,
     server_rejects_double_initialize,
-    client_version_negotiation
+    client_version_negotiation_known,
+    client_version_negotiation_unknown
 ].
 
 init_per_suite(Config) ->
@@ -139,9 +141,9 @@ server_rejects_double_initialize(Config) ->
     {reply, Reply} = mcp_session:handle_message(Session, SecondReq),
     ?assertMatch(#jsonrpc_error{code = ?METHOD_NOT_FOUND}, Reply).
 
-client_version_negotiation(Config) ->
+client_version_negotiation_known(Config) ->
     Session = proplists:get_value(session, Config),
-    %% Client sends a different protocol version
+    %% Client sends an older but known version -- server echoes it
     InitReq = mcp_jsonrpc:request(1, <<"initialize">>, #{
         <<"protocolVersion">> => <<"2024-11-05">>,
         <<"capabilities">> => #{},
@@ -149,6 +151,18 @@ client_version_negotiation(Config) ->
     }),
     {reply, #jsonrpc_response{result = Result}} =
         mcp_session:handle_message(Session, InitReq),
-    %% Server responds with its own version
+    ?assertEqual(<<"2024-11-05">>,
+                 maps:get(<<"protocolVersion">>, Result)).
+
+client_version_negotiation_unknown(Config) ->
+    Session = proplists:get_value(session, Config),
+    %% Client sends an unrecognized version -- server responds with its latest
+    InitReq = mcp_jsonrpc:request(1, <<"initialize">>, #{
+        <<"protocolVersion">> => <<"2099-01-01">>,
+        <<"capabilities">> => #{},
+        <<"clientInfo">> => #{<<"name">> => <<"future-client">>, <<"version">> => <<"0">>}
+    }),
+    {reply, #jsonrpc_response{result = Result}} =
+        mcp_session:handle_message(Session, InitReq),
     ?assertEqual(?MCP_PROTOCOL_VERSION,
                  maps:get(<<"protocolVersion">>, Result)).

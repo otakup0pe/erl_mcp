@@ -1,6 +1,10 @@
 -module(mcp_capability).
 
-%% MCP capability negotiation.
+%% @doc MCP capability negotiation.
+%%
+%% Builds, serializes, parses, and negotiates client and server
+%% capability records used during the `initialize' handshake.
+%% See {@link mcp_session} for how negotiation fits into the lifecycle.
 
 -include("mcp.hrl").
 
@@ -9,10 +13,7 @@
 -export([parse_client/1, parse_server/1]).
 -export([negotiate/2]).
 
-%%--------------------------------------------------------------------
-%% Builders
-%%--------------------------------------------------------------------
-
+%% @doc Build a `#client_capabilities{}' record from an options map.
 -spec client_capabilities(map()) -> #client_capabilities{}.
 client_capabilities(Opts) ->
     #client_capabilities{
@@ -21,6 +22,7 @@ client_capabilities(Opts) ->
         sampling = maps:get(sampling, Opts, undefined)
     }.
 
+%% @doc Build a `#server_capabilities{}' record from an options map.
 -spec server_capabilities(map()) -> #server_capabilities{}.
 server_capabilities(Opts) ->
     #server_capabilities{
@@ -32,10 +34,7 @@ server_capabilities(Opts) ->
         tools = maps:get(tools, Opts, undefined)
     }.
 
-%%--------------------------------------------------------------------
-%% Serialization
-%%--------------------------------------------------------------------
-
+%% @doc Serialize client capabilities to the JSON wire format.
 -spec client_to_map(#client_capabilities{}) -> map().
 client_to_map(#client_capabilities{} = C) ->
     Base = #{},
@@ -43,6 +42,7 @@ client_to_map(#client_capabilities{} = C) ->
     M2 = maybe_put(<<"roots">>, C#client_capabilities.roots, M1),
     maybe_put(<<"sampling">>, C#client_capabilities.sampling, M2).
 
+%% @doc Serialize server capabilities to the JSON wire format.
 -spec server_to_map(#server_capabilities{}) -> map().
 server_to_map(#server_capabilities{} = S) ->
     Base = #{},
@@ -53,10 +53,7 @@ server_to_map(#server_capabilities{} = S) ->
     M5 = maybe_put(<<"resources">>, S#server_capabilities.resources, M4),
     maybe_put(<<"tools">>, S#server_capabilities.tools, M5).
 
-%%--------------------------------------------------------------------
-%% Parsing from wire format
-%%--------------------------------------------------------------------
-
+%% @doc Parse client capabilities from the JSON wire format.
 -spec parse_client(map()) -> #client_capabilities{}.
 parse_client(Map) when is_map(Map) ->
     #client_capabilities{
@@ -65,6 +62,7 @@ parse_client(Map) when is_map(Map) ->
         sampling = maps:get(<<"sampling">>, Map, undefined)
     }.
 
+%% @doc Parse server capabilities from the JSON wire format.
 -spec parse_server(map()) -> #server_capabilities{}.
 parse_server(Map) when is_map(Map) ->
     #server_capabilities{
@@ -76,22 +74,14 @@ parse_server(Map) when is_map(Map) ->
         tools = maps:get(<<"tools">>, Map, undefined)
     }.
 
-%%--------------------------------------------------------------------
-%% Negotiation
-%%--------------------------------------------------------------------
-
-%% Returns the effective server capabilities given what the client supports.
-%% For now this is a passthrough -- server advertises what it has. Future:
-%% filter based on client capabilities (e.g. don't advertise sampling if
-%% client doesn't support it).
+%% @doc Negotiate effective server capabilities given client capabilities.
+%%
+%% Currently a passthrough (server advertises what it has). Future
+%% versions may filter based on what the client supports.
 -spec negotiate(#client_capabilities{}, #server_capabilities{}) ->
     #server_capabilities{}.
 negotiate(_ClientCaps, ServerCaps) ->
     ServerCaps.
-
-%%--------------------------------------------------------------------
-%% Internal
-%%--------------------------------------------------------------------
 
 maybe_put(_Key, undefined, Map) -> Map;
 maybe_put(_Key, M, Map) when is_map(M), map_size(M) =:= 0 -> Map;

@@ -1,7 +1,9 @@
 -module(mcp_transport).
 
-%% Transport behaviour for MCP.
-%% Abstracts stdio vs HTTP. Protocol logic never touches transport directly.
+%% @doc Server-side transport behaviour for MCP.
+%%
+%% Abstracts the wire format (stdio, HTTP, etc.) so protocol logic
+%% never touches transport directly.
 
 -callback send(Message :: term(), State :: term()) ->
     {ok, NewState :: term()} | {error, Reason :: term()}.

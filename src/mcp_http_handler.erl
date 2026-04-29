@@ -1,16 +1,15 @@
 -module(mcp_http_handler).
 
-%% Cowboy handler for MCP streamable HTTP transport.
-%% Handles POST (JSON-RPC dispatch) and GET (SSE stream).
-%% Manages Mcp-Session-Id header.
+%% @doc Cowboy handler for the MCP streamable HTTP transport.
+%%
+%% Handles POST (JSON-RPC dispatch), GET (SSE stream, not yet
+%% implemented), and DELETE (session teardown). Session identity
+%% is carried via the `Mcp-Session-Id' header. Wire this module
+%% into your cowboy router; no public API beyond `init/2'.
 
 -include("mcp.hrl").
 
 -export([init/2]).
-
-%%--------------------------------------------------------------------
-%% Cowboy handler
-%%--------------------------------------------------------------------
 
 init(Req0, State) ->
     Method = cowboy_req:method(Req0),
@@ -26,12 +25,20 @@ init(Req0, State) ->
             {ok, Req, State}
     end.
 
-%%--------------------------------------------------------------------
-%% POST - JSON-RPC dispatch
-%%--------------------------------------------------------------------
-
 handle_post(Req0, State) ->
-    {ok, Body, Req1} = cowboy_req:read_body(Req0),
+    MaxBody = application:get_env(erl_mcp, max_request_body, 1048576),
+    case cowboy_req:read_body(Req0, #{length => MaxBody, period => 15000}) of
+        {ok, Body, Req1} ->
+            handle_post_body(Body, Req1, State);
+        {more, _, Req1} ->
+            Req2 = cowboy_req:reply(413,
+                #{<<"content-type">> => <<"application/json">>},
+                <<"{\"error\":\"Request body too large\"}">>,
+                Req1),
+            {ok, Req2, State}
+    end.
+
+handle_post_body(Body, Req1, State) ->
     case mcp_jsonrpc:decode(Body) of
         {ok, {batch, Messages}} ->
             handle_batch(Messages, Req1, State);
@@ -43,7 +50,6 @@ handle_post(Req0, State) ->
     end.
 
 handle_single_message(#jsonrpc_notification{} = Notif, Req0, State) ->
-    %% Notifications get 202 Accepted, no body
     SessionPid = get_or_create_session(Req0, State),
     case SessionPid of
         {ok, Pid, Req1} ->
@@ -58,16 +64,20 @@ handle_single_message(#jsonrpc_notification{} = Notif, Req0, State) ->
     end;
 handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
                        Req0, State) ->
-    %% Initialize creates a new session
     Handlers = maps:get(handlers, State, mcp_protocol:default_handlers()),
     ServerCaps = maps:get(server_capabilities, State, undefined),
     ServerInfo = maps:get(server_info, State, undefined),
-    SessionOpts = #{
+    OnClose = maps:get(on_close, State, undefined),
+    SessionOpts0 = #{
         role => server,
         handlers => Handlers,
         server_capabilities => ServerCaps,
         server_info => ServerInfo
     },
+    SessionOpts = case OnClose of
+        undefined -> SessionOpts0;
+        Fun -> SessionOpts0#{on_close => Fun}
+    end,
     case mcp_session_manager:create_session(SessionOpts) of
         {ok, SessionId, Pid} ->
             case mcp_session:handle_message(Pid, Msg) of
@@ -119,10 +129,24 @@ handle_batch(Messages, Req0, State) ->
     case get_or_create_session(Req0, State) of
         {ok, Pid, Req1} ->
             Replies = lists:filtermap(fun(Msg) ->
+                IsNotification = is_record(Msg, jsonrpc_notification),
                 case mcp_session:handle_message(Pid, Msg) of
                     {reply, Reply} -> {true, Reply};
                     ok -> false;
-                    {error, _} -> false
+                    {error, Reason} when not IsNotification ->
+                        %% Requests must always get a response
+                        MsgId = case Msg of
+                            #jsonrpc_request{id = I} -> I;
+                            _ -> null
+                        end,
+                        ErrMsg = iolist_to_binary(
+                            io_lib:format("~p", [Reason])),
+                        ErrReply = mcp_jsonrpc:error_response(
+                            MsgId, ?INTERNAL_ERROR, ErrMsg),
+                        {true, ErrReply};
+                    {error, _} ->
+                        %% Notifications have no response
+                        false
                 end
             end, Messages),
             case Replies of
@@ -143,29 +167,12 @@ handle_batch(Messages, Req0, State) ->
             {ok, Req, State}
     end.
 
-%%--------------------------------------------------------------------
-%% GET - SSE stream for server-initiated messages
-%%--------------------------------------------------------------------
-
 handle_get(Req0, State) ->
-    case get_or_create_session(Req0, State) of
-        {ok, _Pid, Req1} ->
-            Req = cowboy_req:stream_reply(200, #{
-                <<"content-type">> => <<"text/event-stream">>,
-                <<"cache-control">> => <<"no-cache">>,
-                <<"connection">> => <<"keep-alive">>
-            }, Req1),
-            %% TODO: hold connection open and stream events
-            %% For now, just open the stream
-            {ok, Req, State};
-        {error, Req1} ->
-            Req = cowboy_req:reply(404, #{}, <<>>, Req1),
-            {ok, Req, State}
-    end.
-
-%%--------------------------------------------------------------------
-%% DELETE - End session
-%%--------------------------------------------------------------------
+    Req = cowboy_req:reply(501,
+        #{<<"content-type">> => <<"application/json">>},
+        <<"{\"error\":\"SSE server push not yet implemented\"}">>,
+        Req0),
+    {ok, Req, State}.
 
 handle_delete(Req0, State) ->
     SessionId = cowboy_req:header(<<"mcp-session-id">>, Req0, undefined),
@@ -183,10 +190,6 @@ handle_delete(Req0, State) ->
                     {ok, Req, State}
             end
     end.
-
-%%--------------------------------------------------------------------
-%% Internal
-%%--------------------------------------------------------------------
 
 get_or_create_session(Req0, _State) ->
     SessionId = cowboy_req:header(<<"mcp-session-id">>, Req0, undefined),

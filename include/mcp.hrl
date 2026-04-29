@@ -1,7 +1,8 @@
 -ifndef(MCP_HRL).
 -define(MCP_HRL, true).
 
--define(MCP_PROTOCOL_VERSION, <<"2025-03-26">>).
+-define(MCP_PROTOCOL_VERSION, <<"2025-06-18">>).
+-define(MCP_SUPPORTED_VERSIONS, [<<"2025-06-18">>, <<"2025-03-26">>, <<"2024-11-05">>]).
 -define(JSONRPC_VERSION, <<"2.0">>).
 
 %% JSON-RPC 2.0 error codes

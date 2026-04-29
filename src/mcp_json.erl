@@ -1,7 +1,6 @@
 -module(mcp_json).
-
-%% Thin wrapper over OTP 27 json module.
-%% No jsx fallback -- OTP 27+ required.
+%% @private
+%% Internal module -- thin wrapper over OTP 27 json module.
 
 -export([encode/1, decode/1]).
 
@@ -10,8 +9,8 @@ encode(Term) ->
     try
         {ok, iolist_to_binary(json:encode(Term))}
     catch
-        error:Reason ->
-            {error, {encode_error, Reason}}
+        error:badarg ->
+            {error, {encode_error, badarg}}
     end.
 
 -spec decode(binary()) -> {ok, term()} | {error, {decode_error, term()}}.
@@ -19,6 +18,12 @@ decode(Bin) ->
     try
         {ok, json:decode(Bin)}
     catch
-        error:Reason ->
+        error:badarg ->
+            {error, {decode_error, badarg}};
+        error:{invalid_byte, _} = Reason ->
+            {error, {decode_error, Reason}};
+        error:{unexpected, _, _} = Reason ->
+            {error, {decode_error, Reason}};
+        error:{unexpected_end, _} = Reason ->
             {error, {decode_error, Reason}}
     end.

@@ -1,10 +1,11 @@
 -module(erl_mcp_transport).
 
-%% Implementations provide synchronous request/response message
-%% exchange plus a close hook. Higher-level state (session id,
-%% protocol negotiation, cache) lives in the client process;
-%% transports only move bytes.
+%% @doc Client-side transport behaviour for MCP.
 %%
+%% Implementations provide synchronous request/response exchange
+%% plus a close hook. Higher-level state (session id, protocol
+%% negotiation, cache) lives in the client process; transports
+%% only move bytes.
 -callback connect(Config :: map()) ->
     {ok, Handle :: term()} | {error, Reason :: term()}.
 

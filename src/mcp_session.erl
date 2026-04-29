@@ -1,9 +1,12 @@
 -module(mcp_session).
--behaviour(gen_server).
 
-%% MCP session state machine.
-%% One session per client-server connection.
-%% Tracks capabilities, pending requests, and request IDs.
+%% @doc MCP session state machine.
+%%
+%% Each client-server connection gets its own session process.
+%% Tracks capabilities, pending requests, and dispatches protocol methods.
+%% Use {@link mcp_protocol} to build the handler map passed via `Opts'.
+
+-behaviour(gen_server).
 
 -include("mcp.hrl").
 
@@ -27,43 +30,54 @@
     transport_pid :: undefined | pid(),
     progress_handlers = #{} :: #{binary() => pid()},
     %% In-flight handler processes: MonitorRef => {From, RequestId, Ref, Pid}
-    in_flight = #{} :: #{reference() => {term(), integer(), reference(), pid()}}
+    in_flight = #{} :: #{reference() => {term(), integer(), reference(), pid()}},
+    idle_timeout :: pos_integer(),
+    idle_timer :: undefined | reference(),
+    on_close :: undefined | fun((binary()) -> any())
 }).
 
-%%--------------------------------------------------------------------
-%% API
-%%--------------------------------------------------------------------
-
+%% @doc Start an unregistered MCP session.
+%%
+%% `Opts' must include `role' (`server' or `client') and may include
+%% `server_capabilities', `server_info', `transport_pid', and `handlers'.
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
+%% @doc Start a named MCP session.
 start_link(Name, Opts) ->
     gen_server:start_link(Name, ?MODULE, Opts, []).
 
+%% @doc Dispatch an inbound JSON-RPC message through the session.
+%%
+%% Returns `{reply, Term}' when the message produces a response,
+%% or `ok' for notifications and fire-and-forget messages.
 -spec handle_message(pid(), term()) -> ok | {reply, term()}.
 handle_message(Session, Message) ->
     gen_server:call(Session, {handle_message, Message}, 300000).
 
+%% @doc Send an outbound JSON-RPC request to the remote peer.
+%%
+%% Returns `{ok, Ref}' immediately; the response arrives as
+%% `{mcp_response, Ref, Result}' in the caller's mailbox.
 -spec send_request(pid(), binary(), map()) ->
     {ok, reference()} | {error, term()}.
 send_request(Session, Method, Params) ->
     gen_server:call(Session, {send_request, Method, Params}).
 
+%% @doc Send a JSON-RPC notification (no response expected).
 -spec send_notification(pid(), #jsonrpc_notification{}) -> ok.
 send_notification(Session, Notification) ->
     gen_server:cast(Session, {send_notification, Notification}).
 
+%% @doc Return a snapshot of session metadata (id, role, status, pending count).
 -spec get_state(pid()) -> map().
 get_state(Session) ->
     gen_server:call(Session, get_state).
 
+%% @doc Return negotiated server capabilities, or error if not yet initialized.
 -spec get_capabilities(pid()) -> {ok, map()} | {error, not_initialized}.
 get_capabilities(Session) ->
     gen_server:call(Session, get_capabilities).
-
-%%--------------------------------------------------------------------
-%% gen_server callbacks
-%%--------------------------------------------------------------------
 
 init(Opts) ->
     Id = maps:get(id, Opts, generate_session_id()),
@@ -72,17 +86,24 @@ init(Opts) ->
     ServerInfo = maps:get(server_info, Opts, undefined),
     ServerCaps = maps:get(server_capabilities, Opts, undefined),
     TransportPid = maps:get(transport_pid, Opts, undefined),
+    OnClose = maps:get(on_close, Opts, undefined),
+    IdleTimeout = application:get_env(erl_mcp, session_idle_timeout, 1800000),
+    Timer = erlang:send_after(IdleTimeout, self(), session_idle_timeout),
     {ok, #state{
         id = Id,
         role = Role,
         handlers = Handlers,
         server_info = ServerInfo,
         server_capabilities = ServerCaps,
-        transport_pid = TransportPid
+        transport_pid = TransportPid,
+        on_close = OnClose,
+        idle_timeout = IdleTimeout,
+        idle_timer = Timer
     }}.
 
 handle_call({handle_message, Message}, From, State) ->
-    case dispatch(Message, From, State) of
+    State1 = reset_idle_timer(State),
+    case dispatch(Message, From, State1) of
         {reply, Reply, NewState} ->
             {reply, {reply, Reply}, NewState};
         {noreply, NewState} ->
@@ -95,11 +116,12 @@ handle_call({handle_message, Message}, From, State) ->
     end;
 
 handle_call({send_request, Method, Params}, From, State) ->
-    Id = State#state.next_request_id,
+    State0 = reset_idle_timer(State),
+    Id = State0#state.next_request_id,
     Ref = make_ref(),
     Request = mcp_jsonrpc:request(Id, Method, Params),
-    Pending = maps:put(Id, {From, Ref}, State#state.pending_requests),
-    NewState = State#state{
+    Pending = maps:put(Id, {From, Ref}, State0#state.pending_requests),
+    NewState = State0#state{
         next_request_id = Id + 1,
         pending_requests = Pending
     },
@@ -107,7 +129,7 @@ handle_call({send_request, Method, Params}, From, State) ->
         ok ->
             {reply, {ok, Ref}, NewState};
         {error, Reason} ->
-            {reply, {error, Reason}, State}
+            {reply, {error, Reason}, State0}
     end;
 
 handle_call(get_state, _From, State) ->
@@ -132,8 +154,9 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 handle_cast({send_notification, Notification}, State) ->
-    send_to_transport(Notification, State),
-    {noreply, State};
+    State1 = reset_idle_timer(State),
+    send_to_transport(Notification, State1),
+    {noreply, State1};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -177,15 +200,38 @@ handle_info({'DOWN', MonRef, process, _Pid, Reason}, State) ->
         error ->
             {noreply, State}
     end;
+handle_info(session_idle_timeout, State) ->
+    {stop, {shutdown, idle_timeout}, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
-terminate(_Reason, _State) ->
+terminate(Reason, State) ->
+    %% Reply with errors to any pending callers tracked in in_flight
+    maps:foreach(fun(MonRef, {From, Id, _Ref, HPid}) ->
+        demonitor(MonRef, [flush]),
+        exit(HPid, kill),
+        case From of
+            {Pid, _Tag} when is_pid(Pid) ->
+                ErrResp = mcp_jsonrpc:error_response(
+                    Id, ?INTERNAL_ERROR, <<"Session terminated">>),
+                gen_server:reply(From, {reply, ErrResp});
+            _ ->
+                ok
+        end
+    end, State#state.in_flight),
+    %% Reply with errors to any pending outbound requests
+    maps:foreach(fun(_Id, {Pid, _Ref}) ->
+        Pid ! {mcp_error, Reason}
+    end, State#state.pending_requests),
+    %% Notify on_close callback
+    case State#state.on_close of
+        undefined -> ok;
+        Fun when is_function(Fun, 1) ->
+            try Fun(State#state.id)
+            catch _:_ -> ok
+            end
+    end,
     ok.
-
-%%--------------------------------------------------------------------
-%% Message dispatch
-%%--------------------------------------------------------------------
 
 dispatch(#jsonrpc_request{method = <<"initialize">>, params = Params, id = Id},
          _From, #state{role = server, status = uninitialized} = State) ->
@@ -234,18 +280,15 @@ dispatch(#jsonrpc_notification{}, _From, State) ->
 dispatch(_, _From, State) ->
     {error, invalid_message, State}.
 
-%%--------------------------------------------------------------------
-%% Async handler execution
-%%--------------------------------------------------------------------
-
 spawn_handler(Handler, Params, From, Id, State) ->
     SessionPid = self(),
     Ref = make_ref(),
+    Context = #{session_id => State#state.id},
     {Pid, MonRef} = spawn_monitor(fun() ->
         %% Handler is a protocol-level fun (e.g. handle_tools_call)
         %% that already returns {ok, Map} | {error, Code, Msg}
         %% and has its own try/catch for tool-level crashes.
-        Result = try Handler(Params, State) of
+        Result = try Handler(Params, Context) of
             {ok, ResultMap} ->
                 {ok, ResultMap};
             {ok, ResultMap, _NewState} ->
@@ -253,9 +296,21 @@ spawn_handler(Handler, Params, From, Id, State) ->
             {error, Code, Msg} ->
                 {error, Code, Msg}
         catch
-            _:Reason ->
+            error:badarg ->
                 ErrMsg = iolist_to_binary(
-                    io_lib:format("~p", [Reason])),
+                    io_lib:format("error:badarg", [])),
+                {error, ?INTERNAL_ERROR, ErrMsg};
+            error:{badkey, Key} ->
+                ErrMsg = iolist_to_binary(
+                    io_lib:format("error:{badkey,~p}", [Key])),
+                {error, ?INTERNAL_ERROR, ErrMsg};
+            error:{badmap, Val} ->
+                ErrMsg = iolist_to_binary(
+                    io_lib:format("error:{badmap,~p}", [Val])),
+                {error, ?INTERNAL_ERROR, ErrMsg};
+            error:badarith ->
+                ErrMsg = iolist_to_binary(
+                    io_lib:format("error:badarith", [])),
                 {error, ?INTERNAL_ERROR, ErrMsg}
         end,
         SessionPid ! {handler_result, Ref, Result}
@@ -263,10 +318,6 @@ spawn_handler(Handler, Params, From, Id, State) ->
     InFlight = maps:put(MonRef, {From, Id, Ref, Pid},
                         State#state.in_flight),
     {noreply_async, State#state{in_flight = InFlight}}.
-
-%%--------------------------------------------------------------------
-%% Initialize handshake (server side)
-%%--------------------------------------------------------------------
 
 handle_initialize(Id, Params, State) ->
     ClientVersion = maps:get(<<"protocolVersion">>, Params, undefined),
@@ -277,23 +328,23 @@ handle_initialize(Id, Params, State) ->
         name = maps:get(<<"name">>, ClientInfoMap, <<"unknown">>),
         version = maps:get(<<"version">>, ClientInfoMap, <<"0.0.0">>)
     },
-    %% Negotiate capabilities
     ServerCaps = case State#state.server_capabilities of
         undefined -> mcp_capability:server_capabilities(#{});
         Caps -> Caps
     end,
     NegotiatedCaps = mcp_capability:negotiate(ClientCaps, ServerCaps),
-    %% Build response
     ServerInfoMap = case State#state.server_info of
         undefined ->
             #{<<"name">> => <<"erl_mcp">>, <<"version">> => <<"0.1.0">>};
         #implementation{name = N, version = V} ->
             #{<<"name">> => N, <<"version">> => V}
     end,
-    %% Use client's protocol version if we support it, otherwise ours
-    ResponseVersion = case ClientVersion of
-        ?MCP_PROTOCOL_VERSION -> ?MCP_PROTOCOL_VERSION;
-        _ -> ?MCP_PROTOCOL_VERSION
+    %% Per MCP spec: echo the client's version if we recognize it,
+    %% otherwise respond with our latest. The client decides whether
+    %% the server's version is acceptable. Never reject.
+    ResponseVersion = case lists:member(ClientVersion, ?MCP_SUPPORTED_VERSIONS) of
+        true -> ClientVersion;
+        false -> ?MCP_PROTOCOL_VERSION
     end,
     Result = #{
         <<"protocolVersion">> => ResponseVersion,
@@ -309,20 +360,14 @@ handle_initialize(Id, Params, State) ->
     },
     {reply, Reply, NewState}.
 
-%%--------------------------------------------------------------------
-%% Cancellation
-%%--------------------------------------------------------------------
-
 handle_cancellation(Params, State) ->
     RequestId = maps:get(<<"requestId">>, Params, undefined),
     _Reason = maps:get(<<"reason">>, Params, undefined),
-    %% Check pending outbound requests first
     case maps:take(RequestId, State#state.pending_requests) of
         {{Pid, _Ref}, Remaining} ->
             Pid ! {mcp_cancelled, RequestId},
             {noreply, State#state{pending_requests = Remaining}};
         error ->
-            %% Check in-flight handler processes
             cancel_in_flight(RequestId, State)
     end.
 
@@ -340,10 +385,6 @@ cancel_in_flight(RequestId, State) ->
             {noreply, State}
     end.
 
-%%--------------------------------------------------------------------
-%% Progress
-%%--------------------------------------------------------------------
-
 handle_progress(Params, State) ->
     Token = maps:get(<<"progressToken">>, Params, undefined),
     case maps:get(Token, State#state.progress_handlers, undefined) of
@@ -354,10 +395,6 @@ handle_progress(Params, State) ->
             {noreply, State}
     end.
 
-%%--------------------------------------------------------------------
-%% Pending response handling
-%%--------------------------------------------------------------------
-
 handle_pending_response(Id, Result, State) ->
     case maps:take(Id, State#state.pending_requests) of
         {{Pid, Ref}, Remaining} ->
@@ -366,10 +403,6 @@ handle_pending_response(Id, Result, State) ->
         error ->
             {noreply, State}
     end.
-
-%%--------------------------------------------------------------------
-%% Transport
-%%--------------------------------------------------------------------
 
 send_to_transport(_Message, #state{transport_pid = undefined}) ->
     {error, no_transport};
@@ -381,10 +414,6 @@ send_to_transport(Message, #state{transport_pid = Pid}) ->
         {error, _} = Err ->
             Err
     end.
-
-%%--------------------------------------------------------------------
-%% Internal: in-flight handler lookup
-%%--------------------------------------------------------------------
 
 %% Find in-flight entry by the handler's correlation Ref
 find_in_flight_by_ref(Ref, InFlight) ->
@@ -405,9 +434,14 @@ find_in_flight_by_id(RequestId, InFlight) ->
             Acc
     end, error, InFlight).
 
-%%--------------------------------------------------------------------
-%% Internal
-%%--------------------------------------------------------------------
+reset_idle_timer(#state{idle_timer = OldTimer,
+                        idle_timeout = Timeout} = State) ->
+    case OldTimer of
+        undefined -> ok;
+        _ -> erlang:cancel_timer(OldTimer)
+    end,
+    NewTimer = erlang:send_after(Timeout, self(), session_idle_timeout),
+    State#state{idle_timer = NewTimer}.
 
 generate_session_id() ->
     Bytes = crypto:strong_rand_bytes(16),

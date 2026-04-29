@@ -1,7 +1,9 @@
-.PHONY: all compile test eunit ct clean docker-test docker-build
+ROOT_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+
+.PHONY: all compile test local-test local-eunit local-ct clean docker-build docker-test dialyzer shell
 
 REBAR3 ?= rebar3
-DOCKER_IMAGE ?= erl-mcp-test:latest
+COMPOSE ?= docker compose -f docker-compose.test.yml
 
 all: compile
 
@@ -11,10 +13,10 @@ compile:
 test: docker-test
 
 docker-build:
-	docker build -t $(DOCKER_IMAGE) -f Dockerfile.test .
+	$(COMPOSE) build
 
 docker-test: docker-build
-	docker run --rm -v $(PWD):/app -w /app $(DOCKER_IMAGE) make local-test
+	$(COMPOSE) run --rm test
 
 local-test: local-eunit local-ct
 

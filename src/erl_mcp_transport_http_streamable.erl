@@ -1,14 +1,7 @@
 -module(erl_mcp_transport_http_streamable).
 
-%% HTTP streamable transport for the MCP client.
-%%
-%% Implements the request/response half of the MCP HTTP transport
-%% (POST application/json, Mcp-Session-Id header, MCP-Protocol-Version
-%% header). SSE GET stream support is deliberately not implemented --
-%% Phase 1-4 only needs synchronous request/response; pushed
-%% notifications arrive inside POST response bodies when the server
-%% is able to piggyback them, or are received when the client issues
-%% the next request.
+%% @private
+%% Internal module -- default {@link erl_mcp_transport} over httpc.
 
 -behaviour(erl_mcp_transport).
 
@@ -82,10 +75,6 @@ close(#handle{}) ->
 update_auth(#handle{} = H, Auth) ->
     {ok, H#handle{auth = Auth}}.
 
-%%--------------------------------------------------------------------
-%% Internal
-%%--------------------------------------------------------------------
-
 handle_response(Status, Body, H) when Status >= 200, Status < 300 ->
     {ok, Body, H};
 handle_response(404, _Body, H) ->
@@ -127,7 +116,6 @@ find_session_id(Headers, Current) ->
     end.
 
 ensure_profile() ->
-    %% place holder for future profile knob
     default.
 
 ensure_inets_started() ->
