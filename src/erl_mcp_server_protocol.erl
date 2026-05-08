@@ -85,6 +85,12 @@ dispatch_tool_call(Name, Arguments, Context) ->
     end.
 
 %% @private
+-spec invoke_tool_handler(
+    fun((map(), term()) ->
+        {ok, list()} | {ok, map()} | {error, binary()} | term()),
+    map(), term()) ->
+    {ok, map()} | {error, integer(), binary()}.
+-dialyzer({no_match, invoke_tool_handler/3}).
 invoke_tool_handler(Handler, Arguments, Context) ->
     try Handler(Arguments, Context) of
         {ok, ContentList} when is_list(ContentList) ->

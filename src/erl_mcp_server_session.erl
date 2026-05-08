@@ -50,8 +50,13 @@ start_link(Name, Opts) ->
 %% @doc Dispatch an inbound JSON-RPC message through the session.
 %%
 %% Returns `{reply, Term}' when the message produces a response,
-%% or `ok' for notifications and fire-and-forget messages.
--spec handle_message(pid(), term()) -> ok | {reply, term()}.
+%% `ok' for notifications and fire-and-forget messages, or
+%% `{error, Reason}' when dispatch fails (handler error, malformed
+%% message, etc.). Errors propagate through the response envelope
+%% so transport-layer code can surface them as JSON-RPC errors
+%% instead of crashing the session.
+-spec handle_message(pid(), term()) ->
+    ok | {reply, term()} | {error, term()}.
 handle_message(Session, Message) ->
     gen_server:call(Session, {handle_message, Message}, 300000).
 
