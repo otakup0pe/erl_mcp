@@ -1,6 +1,6 @@
--module(mcp_session_manager).
-%% @private
-%% Internal module -- session lifecycle tracking for {@link mcp_http_handler}.
+-module(erl_mcp_server_session_manager).
+%% @doc false
+%% Internal module -- session lifecycle tracking for {@link erl_mcp_server_http_handler}.
 -behaviour(gen_server).
 
 -export([start_link/0]).
@@ -36,10 +36,10 @@ init([]) ->
     {ok, #state{}}.
 
 handle_call({create_session, Opts}, _From, State) ->
-    case mcp_session:start_link(Opts) of
+    case erl_mcp_server_session:start_link(Opts) of
         {ok, Pid} ->
             unlink(Pid),
-            Info = mcp_session:get_state(Pid),
+            Info = erl_mcp_server_session:get_state(Pid),
             SessionId = maps:get(id, Info),
             MonRef = monitor(process, Pid),
             Sessions = maps:put(SessionId, Pid, State#state.sessions),

@@ -1,12 +1,19 @@
--module(mcp_capability).
+-module(erl_mcp_protocol_capability).
 
 %% @doc MCP capability negotiation.
 %%
 %% Builds, serializes, parses, and negotiates client and server
 %% capability records used during the `initialize' handshake.
-%% See {@link mcp_session} for how negotiation fits into the lifecycle.
+%%
+%% Example:
+%% ```
+%% ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
+%%     tools => #{list_changed => true}
+%% }),
+%% Map = erl_mcp_protocol_capability:server_to_map(ServerCaps).
+%% '''
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([client_capabilities/1, server_capabilities/1]).
 -export([client_to_map/1, server_to_map/1]).
@@ -83,6 +90,7 @@ parse_server(Map) when is_map(Map) ->
 negotiate(_ClientCaps, ServerCaps) ->
     ServerCaps.
 
+%% @private
 maybe_put(_Key, undefined, Map) -> Map;
 maybe_put(_Key, M, Map) when is_map(M), map_size(M) =:= 0 -> Map;
 maybe_put(Key, Value, Map) -> Map#{Key => Value}.

@@ -1,5 +1,5 @@
--module(mcp_sup).
-%% @private
+-module(erl_mcp_sup).
+%% @doc false
 %% OTP infrastructure -- not part of the public API.
 -behaviour(supervisor).
 
@@ -17,13 +17,13 @@ init([]) ->
     },
     Children = [
         #{
-            id => mcp_tool_registry,
-            start => {mcp_tool_registry, start_link, []},
+            id => erl_mcp_server_tool_registry,
+            start => {erl_mcp_server_tool_registry, start_link, []},
             type => worker
         },
         #{
-            id => mcp_session_manager,
-            start => {mcp_session_manager, start_link, []},
+            id => erl_mcp_server_session_manager,
+            start => {erl_mcp_server_session_manager, start_link, []},
             type => worker
         }
     ],

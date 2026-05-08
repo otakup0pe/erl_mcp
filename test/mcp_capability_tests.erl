@@ -1,42 +1,42 @@
 -module(mcp_capability_tests).
 -include_lib("eunit/include/eunit.hrl").
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 %%--------------------------------------------------------------------
 %% Client capability tests
 %%--------------------------------------------------------------------
 
 client_defaults_test() ->
-    C = mcp_capability:client_capabilities(#{}),
+    C = erl_mcp_protocol_capability:client_capabilities(#{}),
     ?assertEqual(#{}, C#client_capabilities.experimental),
     ?assertEqual(undefined, C#client_capabilities.roots),
     ?assertEqual(undefined, C#client_capabilities.sampling).
 
 client_with_roots_test() ->
-    C = mcp_capability:client_capabilities(#{roots => #{list_changed => true}}),
+    C = erl_mcp_protocol_capability:client_capabilities(#{roots => #{list_changed => true}}),
     ?assertEqual(#{list_changed => true}, C#client_capabilities.roots).
 
 client_with_sampling_test() ->
-    C = mcp_capability:client_capabilities(#{sampling => #{}}),
+    C = erl_mcp_protocol_capability:client_capabilities(#{sampling => #{}}),
     ?assertEqual(#{}, C#client_capabilities.sampling).
 
 client_to_map_empty_test() ->
-    C = mcp_capability:client_capabilities(#{}),
-    Map = mcp_capability:client_to_map(C),
+    C = erl_mcp_protocol_capability:client_capabilities(#{}),
+    Map = erl_mcp_protocol_capability:client_to_map(C),
     ?assertEqual(#{}, Map).
 
 client_to_map_with_roots_test() ->
-    C = mcp_capability:client_capabilities(#{roots => #{list_changed => true}}),
-    Map = mcp_capability:client_to_map(C),
+    C = erl_mcp_protocol_capability:client_capabilities(#{roots => #{list_changed => true}}),
+    Map = erl_mcp_protocol_capability:client_to_map(C),
     ?assert(maps:is_key(<<"roots">>, Map)).
 
 client_roundtrip_test() ->
-    Orig = mcp_capability:client_capabilities(#{
+    Orig = erl_mcp_protocol_capability:client_capabilities(#{
         roots => #{list_changed => true},
         sampling => #{}
     }),
-    Map = mcp_capability:client_to_map(Orig),
-    Parsed = mcp_capability:parse_client(Map),
+    Map = erl_mcp_protocol_capability:client_to_map(Orig),
+    Parsed = erl_mcp_protocol_capability:parse_client(Map),
     ?assertEqual(Orig#client_capabilities.roots,
                  Parsed#client_capabilities.roots).
 
@@ -45,37 +45,36 @@ client_roundtrip_test() ->
 %%--------------------------------------------------------------------
 
 server_defaults_test() ->
-    S = mcp_capability:server_capabilities(#{}),
+    S = erl_mcp_protocol_capability:server_capabilities(#{}),
     ?assertEqual(#{}, S#server_capabilities.experimental),
     ?assertEqual(undefined, S#server_capabilities.tools),
     ?assertEqual(undefined, S#server_capabilities.resources).
 
 server_with_tools_test() ->
-    S = mcp_capability:server_capabilities(#{tools => #{list_changed => true}}),
+    S = erl_mcp_protocol_capability:server_capabilities(#{tools => #{list_changed => true}}),
     ?assertEqual(#{list_changed => true}, S#server_capabilities.tools).
 
 server_to_map_empty_test() ->
-    S = mcp_capability:server_capabilities(#{}),
-    Map = mcp_capability:server_to_map(S),
+    S = erl_mcp_protocol_capability:server_capabilities(#{}),
+    Map = erl_mcp_protocol_capability:server_to_map(S),
     ?assertEqual(#{}, Map).
 
 server_to_map_with_tools_test() ->
-    S = mcp_capability:server_capabilities(#{
+    S = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true},
         logging => #{}
     }),
-    Map = mcp_capability:server_to_map(S),
+    Map = erl_mcp_protocol_capability:server_to_map(S),
     ?assert(maps:is_key(<<"tools">>, Map)),
-    %% Empty map logging should be omitted
     ?assertNot(maps:is_key(<<"logging">>, Map)).
 
 server_roundtrip_test() ->
-    Orig = mcp_capability:server_capabilities(#{
+    Orig = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true},
         resources => #{subscribe => true, list_changed => false}
     }),
-    Map = mcp_capability:server_to_map(Orig),
-    Parsed = mcp_capability:parse_server(Map),
+    Map = erl_mcp_protocol_capability:server_to_map(Orig),
+    Parsed = erl_mcp_protocol_capability:parse_server(Map),
     ?assertEqual(Orig#server_capabilities.tools,
                  Parsed#server_capabilities.tools).
 
@@ -84,7 +83,7 @@ server_roundtrip_test() ->
 %%--------------------------------------------------------------------
 
 negotiate_passthrough_test() ->
-    Client = mcp_capability:client_capabilities(#{roots => #{}}),
-    Server = mcp_capability:server_capabilities(#{tools => #{list_changed => true}}),
-    Result = mcp_capability:negotiate(Client, Server),
+    Client = erl_mcp_protocol_capability:client_capabilities(#{roots => #{}}),
+    Server = erl_mcp_protocol_capability:server_capabilities(#{tools => #{list_changed => true}}),
+    Result = erl_mcp_protocol_capability:negotiate(Client, Server),
     ?assertEqual(Server, Result).

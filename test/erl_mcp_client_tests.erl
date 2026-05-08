@@ -1,19 +1,19 @@
 -module(erl_mcp_client_tests).
 
 -include_lib("eunit/include/eunit.hrl").
--include("mcp.hrl").
--include("mcp_client.hrl").
+-include("erl_mcp.hrl").
+-include("erl_mcp_client.hrl").
 
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
 
 encode(Msg) ->
-    {ok, Bin} = mcp_jsonrpc:encode(Msg),
+    {ok, Bin} = erl_mcp_protocol_jsonrpc:encode(Msg),
     Bin.
 
 initialize_response(Id) ->
-    encode(mcp_jsonrpc:response(Id, #{
+    encode(erl_mcp_protocol_jsonrpc:response(Id, #{
         <<"protocolVersion">> => <<"2025-06-18">>,
         <<"capabilities">> => #{<<"tools">> => #{<<"listChanged">> => true}},
         <<"serverInfo">> => #{<<"name">> => <<"mock-server">>,
@@ -21,14 +21,14 @@ initialize_response(Id) ->
     })).
 
 tools_list_response(Id, Tools) ->
-    encode(mcp_jsonrpc:response(Id, #{<<"tools">> => Tools})).
+    encode(erl_mcp_protocol_jsonrpc:response(Id, #{<<"tools">> => Tools})).
 
 tools_call_response(Id, Content) ->
-    encode(mcp_jsonrpc:response(Id, #{<<"content">> => Content,
+    encode(erl_mcp_protocol_jsonrpc:response(Id, #{<<"content">> => Content,
                                        <<"isError">> => false})).
 
 tools_call_error_response(Id, Content) ->
-    encode(mcp_jsonrpc:response(Id, #{<<"content">> => Content,
+    encode(erl_mcp_protocol_jsonrpc:response(Id, #{<<"content">> => Content,
                                        <<"isError">> => true})).
 
 start_client(MockPid, ExtraConfig) ->
@@ -40,9 +40,6 @@ start_client(MockPid, ExtraConfig) ->
     erl_mcp_client:start_link(Config).
 
 queue_initialize(MockPid) ->
-    %% initialize (id=1) -> init response
-    %% initialized notification (no response needed, but the mock
-    %% still consumes a queued entry via the send path)
     ok = mock_client_transport:queue_response(MockPid, initialize_response(1)),
     ok = mock_client_transport:queue_response(MockPid, no_response).
 
@@ -67,13 +64,11 @@ list_tools_caches_results_test() ->
     Tools = [#{<<"name">> => <<"echo">>,
                <<"description">> => <<"Echoes input">>,
                <<"inputSchema">> => #{<<"type">> => <<"object">>}}],
-    %% tools/list is id=2 after initialize (id=1)
     ok = mock_client_transport:queue_response(Mock, tools_list_response(2, Tools)),
     {ok, Pid} = start_client(Mock, #{}),
     {ok, [Tool]} = erl_mcp_client:list_tools(Pid),
     ?assertEqual(<<"echo">>, Tool#mcp_client_tool.name),
     ?assertEqual(<<"echo">>, Tool#mcp_client_tool.raw_name),
-    %% Second call hits cache -- no new request sent
     SentBefore = length(mock_client_transport:sent_messages(Mock)),
     {ok, [Tool]} = erl_mcp_client:list_tools(Pid),
     SentAfter = length(mock_client_transport:sent_messages(Mock)),
@@ -121,7 +116,7 @@ tools_call_isError_returns_error_test() ->
 tools_call_jsonrpc_error_test() ->
     Mock = mock_client_transport:new(),
     queue_initialize(Mock),
-    ErrResp = encode(mcp_jsonrpc:error_response(2, ?METHOD_NOT_FOUND,
+    ErrResp = encode(erl_mcp_protocol_jsonrpc:error_response(2, ?METHOD_NOT_FOUND,
                                                  <<"nope">>)),
     ok = mock_client_transport:queue_response(Mock, ErrResp),
     {ok, Pid} = start_client(Mock, #{}),

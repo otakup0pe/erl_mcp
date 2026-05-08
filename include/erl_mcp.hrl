@@ -1,5 +1,5 @@
--ifndef(MCP_HRL).
--define(MCP_HRL, true).
+-ifndef(ERL_MCP_HRL).
+-define(ERL_MCP_HRL, true).
 
 -define(MCP_PROTOCOL_VERSION, <<"2025-06-18">>).
 -define(MCP_SUPPORTED_VERSIONS, [<<"2025-06-18">>, <<"2025-03-26">>, <<"2024-11-05">>]).

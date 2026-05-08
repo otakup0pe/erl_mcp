@@ -1,6 +1,7 @@
--module(mcp_transport).
+-module(erl_mcp_server_transport).
 
-%% @doc Server-side transport behaviour for MCP.
+%% @doc false
+%% Server-side transport behaviour for MCP.
 %%
 %% Abstracts the wire format (stdio, HTTP, etc.) so protocol logic
 %% never touches transport directly.

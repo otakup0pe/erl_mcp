@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, mainline]
+  pull_request:
+    branches: [main, mainline]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: erlang:27-slim
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          apt-get update && apt-get install -y make git
+          git clone https://github.com/erlang/rebar3.git /tmp/rebar3
+          cd /tmp/rebar3 && ./bootstrap
+          install -m 755 /tmp/rebar3/rebar3 /usr/local/bin/rebar3
+
+      - name: Compile
+        run: rebar3 compile
+
+      - name: EUnit
+        run: rebar3 eunit
+
+      - name: Common Test
+        run: rebar3 ct
+
+      - name: Dialyzer
+        run: rebar3 dialyzer

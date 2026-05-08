@@ -1,12 +1,19 @@
--module(mcp_tool).
+-module(erl_mcp_server_tool).
 
 %% @doc MCP tool definition builder and serialization.
 %%
 %% Use `new/2..4' to construct `#tool{}' records and `to_map/1' /
 %% `from_map/1' to convert to and from the JSON wire format.
 %% Tool annotations can be validated with `validate_annotations/1'.
+%%
+%% Example:
+%% ```
+%% Tool = erl_mcp_server_tool:new(<<"echo">>, <<"Echoes input">>,
+%%     #{<<"type">> => <<"object">>}),
+%% Map = erl_mcp_server_tool:to_map(Tool).
+%% '''
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([new/2, new/3, new/4]).
 -export([to_map/1, from_map/1]).

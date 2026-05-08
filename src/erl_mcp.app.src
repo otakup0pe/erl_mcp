@@ -2,10 +2,10 @@
     {description, "Erlang implementation of the Model Context Protocol (MCP)"},
     {vsn, "0.1.0"},
     {registered, [
-        mcp_session_manager,
-        mcp_tool_registry
+        erl_mcp_server_session_manager,
+        erl_mcp_server_tool_registry
     ]},
-    {mod, {mcp_app, []}},
+    {mod, {erl_mcp_app, []}},
     {applications, [
         kernel,
         stdlib,
@@ -14,5 +14,5 @@
     {env, []},
     {modules, []},
     {licenses, ["Apache-2.0"]},
-    {links, []}
+    {links, [{"GitHub", "https://github.com/otakup0pe/erl_mcp"}]}
 ]}.

@@ -1,13 +1,22 @@
--module(mcp_protocol).
+-module(erl_mcp_server_protocol).
 
 %% @doc Ready-made MCP method handlers.
 %%
 %% `default_handlers/0,1' returns a map of `Method => fun/2' entries
-%% suitable for the `handlers' option of {@link mcp_session:start_link/1}.
+%% suitable for the `handlers' option of {@link erl_mcp_server_session:start_link/1}.
 %% Covers `tools/list' and `tools/call'; extend with your own entries
 %% for prompts, resources, or custom methods.
+%%
+%% Example:
+%% ```
+%% Handlers = erl_mcp_server_protocol:default_handlers(#{page_size => 100}),
+%% {ok, Session} = erl_mcp_server_session:start_link(#{
+%%     role => server,
+%%     handlers => Handlers
+%% }).
+%% '''
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([default_handlers/0, default_handlers/1]).
 -export([handle_tools_list/2, handle_tools_call/2]).
@@ -32,17 +41,17 @@ default_handlers(Opts) ->
 
 %% @doc Handle a `tools/list' request.
 %%
-%% Reads tools from {@link mcp_tool_registry} with cursor-based pagination.
+%% Reads tools from {@link erl_mcp_server_tool_registry} with cursor-based pagination.
 -spec handle_tools_list(map(), term()) ->
     {ok, map()} | {error, integer(), binary()}.
 handle_tools_list(Params, _State) ->
     Cursor = maps:get(<<"cursor">>, Params, undefined),
     PageSize = maps:get(page_size, Params, 50),
-    {Tools, NextCursor} = mcp_tool_registry:list_tools(#{
+    {Tools, NextCursor} = erl_mcp_server_tool_registry:list_tools(#{
         cursor => Cursor,
         page_size => PageSize
     }),
-    ToolMaps = [mcp_tool:to_map(T) || T <- Tools],
+    ToolMaps = [erl_mcp_server_tool:to_map(T) || T <- Tools],
     Result = #{<<"tools">> => ToolMaps},
     case NextCursor of
         undefined -> {ok, Result};
@@ -51,7 +60,7 @@ handle_tools_list(Params, _State) ->
 
 %% @doc Handle a `tools/call' request.
 %%
-%% Looks up the tool in {@link mcp_tool_registry}, invokes its handler,
+%% Looks up the tool in {@link erl_mcp_server_tool_registry}, invokes its handler,
 %% and wraps the result (or any caught error) into the MCP response format.
 -spec handle_tools_call(map(), term()) ->
     {ok, map()} | {error, integer(), binary()}.
@@ -65,8 +74,9 @@ handle_tools_call(Params, Context) ->
             dispatch_tool_call(Name, Arguments, Context)
     end.
 
+%% @private
 dispatch_tool_call(Name, Arguments, Context) ->
-    case mcp_tool_registry:lookup(Name) of
+    case erl_mcp_server_tool_registry:lookup(Name) of
         {ok, _Tool, Handler} ->
             invoke_tool_handler(Handler, Arguments, Context);
         {error, not_found} ->
@@ -74,10 +84,11 @@ dispatch_tool_call(Name, Arguments, Context) ->
              <<"Tool not found: ", Name/binary>>}
     end.
 
+%% @private
 invoke_tool_handler(Handler, Arguments, Context) ->
     try Handler(Arguments, Context) of
         {ok, ContentList} when is_list(ContentList) ->
-            Maps = [mcp_content:to_map(C) || C <- ContentList],
+            Maps = [erl_mcp_protocol_content:to_map(C) || C <- ContentList],
             {ok, #{<<"content">> => Maps}};
         {ok, ResultMap} when is_map(ResultMap) ->
             {ok, ResultMap};
@@ -102,6 +113,7 @@ invoke_tool_handler(Handler, Arguments, Context) ->
             wrap_tool_error(<<"error:badarith">>)
     end.
 
+%% @private
 wrap_tool_error(Msg) ->
-    ErrorContent = mcp_content:to_map(mcp_content:text(Msg)),
+    ErrorContent = erl_mcp_protocol_content:to_map(erl_mcp_protocol_content:text(Msg)),
     {ok, #{<<"content">> => [ErrorContent], <<"isError">> => true}}.

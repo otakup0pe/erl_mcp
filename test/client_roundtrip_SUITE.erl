@@ -1,8 +1,8 @@
 -module(client_roundtrip_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
--include("mcp.hrl").
--include("mcp_client.hrl").
+-include("erl_mcp.hrl").
+-include("erl_mcp_client.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
@@ -28,13 +28,12 @@ end_per_suite(_Config) ->
 
 init_per_testcase(_TC, Config) ->
     catch cowboy:stop_listener(client_roundtrip_listener),
-    stop_if_alive(mcp_session_manager),
-    stop_if_alive(mcp_tool_registry),
-    {ok, MgrPid} = mcp_session_manager:start_link(),
+    stop_if_alive(erl_mcp_server_session_manager),
+    stop_if_alive(erl_mcp_server_tool_registry),
+    {ok, MgrPid} = erl_mcp_server_session_manager:start_link(),
     unlink(MgrPid),
-    {ok, RegPid} = mcp_tool_registry:start_link(),
+    {ok, RegPid} = erl_mcp_server_tool_registry:start_link(),
     unlink(RegPid),
-    %% Register tools: echo (normal) and boom (always errors)
     EchoTool = #tool{
         name = <<"echo">>,
         description = <<"Echoes input">>,
@@ -43,17 +42,17 @@ init_per_testcase(_TC, Config) ->
     EchoHandler = fun(Args, _St) ->
         Msg = maps:get(<<"message">>, Args, <<"no message">>),
         {ok, #{<<"content">> =>
-                   [mcp_content:to_map(mcp_content:text(Msg))]}}
+                   [erl_mcp_protocol_content:to_map(erl_mcp_protocol_content:text(Msg))]}}
     end,
-    ok = mcp_tool_registry:register_tool(EchoTool, EchoHandler),
+    ok = erl_mcp_server_tool_registry:register_tool(EchoTool, EchoHandler),
     BoomTool = #tool{
         name = <<"boom">>,
         description = <<"Always errors">>,
         input_schema = #{<<"type">> => <<"object">>}
     },
     BoomHandler = fun(_Args, _St) -> {error, <<"boom!">>} end,
-    ok = mcp_tool_registry:register_tool(BoomTool, BoomHandler),
-    ServerCaps = mcp_capability:server_capabilities(#{
+    ok = erl_mcp_server_tool_registry:register_tool(BoomTool, BoomHandler),
+    ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true}
     }),
     ServerInfo = #implementation{
@@ -61,12 +60,12 @@ init_per_testcase(_TC, Config) ->
         version = <<"0.1.0">>
     },
     HandlerState = #{
-        handlers => mcp_protocol:default_handlers(),
+        handlers => erl_mcp_server_protocol:default_handlers(),
         server_capabilities => ServerCaps,
         server_info => ServerInfo
     },
     Dispatch = cowboy_router:compile([
-        {'_', [{"/mcp", mcp_http_handler, HandlerState}]}
+        {'_', [{"/mcp", erl_mcp_server_http_handler, HandlerState}]}
     ]),
     {ok, _} = cowboy:start_clear(client_roundtrip_listener,
         [{port, 0}],

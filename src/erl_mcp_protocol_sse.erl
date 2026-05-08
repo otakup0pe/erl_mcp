@@ -1,5 +1,5 @@
--module(mcp_sse).
-%% @private
+-module(erl_mcp_protocol_sse).
+%% @doc false
 %% Internal module -- SSE encoding and decoding for MCP HTTP transport.
 
 -export([encode_event/1, encode_event/2, encode_event/3]).

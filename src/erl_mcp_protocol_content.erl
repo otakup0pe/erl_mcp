@@ -1,12 +1,19 @@
--module(mcp_content).
+-module(erl_mcp_protocol_content).
 
 %% @doc Builders for MCP content types.
 %%
 %% Provides constructor functions for text, image, audio, and
 %% embedded-resource content records. Use `to_map/1' to serialize
 %% any content record to the MCP JSON wire format.
+%%
+%% Example:
+%% ```
+%% Content = erl_mcp_protocol_content:text(<<"Hello, world!">>),
+%% Map = erl_mcp_protocol_content:to_map(Content).
+%% %% => #{<<"type">> => <<"text">>, <<"text">> => <<"Hello, world!">>}
+%% '''
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([text/1, text/2, image/2, image/3, audio/2, audio/3,
          embedded_resource/1, embedded_resource/2]).

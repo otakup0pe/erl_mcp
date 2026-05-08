@@ -1,8 +1,8 @@
--module(mcp_jsonrpc).
-%% @private
+-module(erl_mcp_protocol_jsonrpc).
+%% @doc false
 %% Internal module -- JSON-RPC 2.0 wire format for MCP sessions.
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([encode/1, decode/1]).
 -export([request/3, response/2, error_response/3, error_response/4,
@@ -41,15 +41,15 @@ batch(Messages) when is_list(Messages) ->
 -spec encode(term()) -> {ok, binary()} | {error, term()}.
 encode({batch, Messages}) when is_list(Messages) ->
     Encoded = [encode_message(M) || M <- Messages],
-    mcp_json:encode(Encoded);
+    erl_mcp_protocol_json:encode(Encoded);
 encode(#jsonrpc_request{} = Req) ->
-    mcp_json:encode(encode_message(Req));
+    erl_mcp_protocol_json:encode(encode_message(Req));
 encode(#jsonrpc_response{} = Resp) ->
-    mcp_json:encode(encode_message(Resp));
+    erl_mcp_protocol_json:encode(encode_message(Resp));
 encode(#jsonrpc_error{} = Err) ->
-    mcp_json:encode(encode_message(Err));
+    erl_mcp_protocol_json:encode(encode_message(Err));
 encode(#jsonrpc_notification{} = Notif) ->
-    mcp_json:encode(encode_message(Notif));
+    erl_mcp_protocol_json:encode(encode_message(Notif));
 encode(_) ->
     {error, invalid_message}.
 
@@ -88,7 +88,7 @@ encode_message(#jsonrpc_notification{method = Method, params = Params}) ->
 
 -spec decode(binary()) -> {ok, term()} | {error, term()}.
 decode(Bin) ->
-    case mcp_json:decode(Bin) of
+    case erl_mcp_protocol_json:decode(Bin) of
         {ok, List} when is_list(List) ->
             decode_batch(List);
         {ok, Map} when is_map(Map) ->
@@ -166,7 +166,6 @@ decode_error(Map) ->
     decode_error_obj(Id, ErrObj).
 
 decode_error_null_id(Map) ->
-    %% JSON null decodes to null atom in OTP json module
     case Map of
         #{<<"id">> := null, <<"error">> := ErrObj} ->
             decode_error_obj(null, ErrObj);

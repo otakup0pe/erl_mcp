@@ -1,7 +1,7 @@
--ifndef(MCP_CLIENT_HRL).
--define(MCP_CLIENT_HRL, true).
+-ifndef(ERL_MCP_CLIENT_HRL).
+-define(ERL_MCP_CLIENT_HRL, true).
 
--define(MCP_CLIENT_DEFAULT_PROTOCOL_VERSION, <<"2025-03-26">>).
+-define(MCP_CLIENT_DEFAULT_PROTOCOL_VERSION, <<"2025-06-18">>).
 
 -record(mcp_client_tool, {
     name :: binary(),

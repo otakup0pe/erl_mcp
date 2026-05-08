@@ -6,6 +6,8 @@
 
 Erlang/OTP implementation of the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP).
 
+**Protocol version**: `2025-06-18`
+
 ## Requirements
 
 - OTP 27+
@@ -19,16 +21,26 @@ Add the dependency to `rebar.config`:
 {deps, [{erl_mcp, "0.1.0"}]}.
 ```
 
-Implement a tool handler, register it, and start the server:
+### Server: register a tool and start the HTTP handler
 
 ```erlang
-Tool = mcp_tool:new(<<"echo">>, <<"Echoes input">>,
-                    #{<<"type">> => <<"object">>}),
-Handler = fun(Args, _Context) -> {ok, [mcp_content:text(maps:get(<<"input">>, Args))]} end,
-mcp_tool_registry:register_tool(Tool, Handler).
+Tool = erl_mcp_server_tool:new(<<"echo">>, <<"Echoes input">>,
+    #{<<"type">> => <<"object">>}),
+Handler = fun(Args, _Ctx) ->
+    {ok, [erl_mcp_protocol_content:text(maps:get(<<"input">>, Args))]}
+end,
+erl_mcp_server_tool_registry:register_tool(Tool, Handler),
+
+Dispatch = cowboy_router:compile([
+    {'_', [{"/mcp", erl_mcp_server_http_handler, #{
+        handlers => erl_mcp_server_protocol:default_handlers()
+    }}]}
+]),
+cowboy:start_clear(my_mcp, [{port, 8080}],
+    #{env => #{dispatch => Dispatch}}).
 ```
 
-Connect to an external MCP server as a client:
+### Client: connect to an external MCP server
 
 ```erlang
 {ok, Pid} = erl_mcp_client:start_link(#{
@@ -39,7 +51,14 @@ Connect to an external MCP server as a client:
 {ok, Result} = erl_mcp_client:call(Pid, <<"tool_name">>, #{}, 30000).
 ```
 
-See [docs/usage.md](docs/usage.md) for detailed examples.
+## Transports
+
+| Transport | Side | Module | Status |
+|-----------|------|--------|--------|
+| HTTP streamable | Server | `erl_mcp_server_http_handler` | Shipped |
+| HTTP streamable | Client | `erl_mcp_transport_http_streamable` | Shipped |
+| SSE | -- | `erl_mcp_protocol_sse` | Encode/decode only |
+| stdio | -- | -- | Deferred |
 
 ## Configuration
 
@@ -56,7 +75,7 @@ See `src/erl_mcp.app.src` for the full set.
 - **Server framework** -- behaviour-based tool handlers with registry
 - **Client** -- gen_statem client with reconnect, tool caching, prefixing
 - **Tool registry** -- ETS-backed, paginated, change notifications
-- **HTTP transport** -- Cowboy-based streamable HTTP (MCP 2025-03-26)
+- **HTTP transport** -- Cowboy-based streamable HTTP (MCP 2025-06-18)
 - **SSE** -- Server-Sent Events encoding and decoding
 - **JSON-RPC 2.0** -- full encode/decode with batch support
 - **Session management** -- per-connection state, capability negotiation, idle timeout

@@ -1,4 +1,4 @@
--module(mcp_http_handler).
+-module(erl_mcp_server_http_handler).
 
 %% @doc Cowboy handler for the MCP streamable HTTP transport.
 %%
@@ -6,8 +6,19 @@
 %% implemented), and DELETE (session teardown). Session identity
 %% is carried via the `Mcp-Session-Id' header. Wire this module
 %% into your cowboy router; no public API beyond `init/2'.
+%%
+%% Example:
+%% ```
+%% Dispatch = cowboy_router:compile([
+%%     {'_', [{"/mcp", erl_mcp_server_http_handler, #{
+%%         handlers => erl_mcp_server_protocol:default_handlers()
+%%     }}]}
+%% ]),
+%% cowboy:start_clear(my_listener, [{port, 8080}],
+%%     #{env => #{dispatch => Dispatch}}).
+%% '''
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([init/2]).
 
@@ -39,7 +50,7 @@ handle_post(Req0, State) ->
     end.
 
 handle_post_body(Body, Req1, State) ->
-    case mcp_jsonrpc:decode(Body) of
+    case erl_mcp_protocol_jsonrpc:decode(Body) of
         {ok, {batch, Messages}} ->
             handle_batch(Messages, Req1, State);
         {ok, Message} ->
@@ -53,7 +64,7 @@ handle_single_message(#jsonrpc_notification{} = Notif, Req0, State) ->
     SessionPid = get_or_create_session(Req0, State),
     case SessionPid of
         {ok, Pid, Req1} ->
-            mcp_session:handle_message(Pid, Notif),
+            erl_mcp_server_session:handle_message(Pid, Notif),
             Req = cowboy_req:reply(202, #{}, <<>>, Req1),
             {ok, Req, State};
         {error, Req1} ->
@@ -64,7 +75,7 @@ handle_single_message(#jsonrpc_notification{} = Notif, Req0, State) ->
     end;
 handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
                        Req0, State) ->
-    Handlers = maps:get(handlers, State, mcp_protocol:default_handlers()),
+    Handlers = maps:get(handlers, State, erl_mcp_server_protocol:default_handlers()),
     ServerCaps = maps:get(server_capabilities, State, undefined),
     ServerInfo = maps:get(server_info, State, undefined),
     OnClose = maps:get(on_close, State, undefined),
@@ -78,11 +89,11 @@ handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
         undefined -> SessionOpts0;
         Fun -> SessionOpts0#{on_close => Fun}
     end,
-    case mcp_session_manager:create_session(SessionOpts) of
+    case erl_mcp_server_session_manager:create_session(SessionOpts) of
         {ok, SessionId, Pid} ->
-            case mcp_session:handle_message(Pid, Msg) of
+            case erl_mcp_server_session:handle_message(Pid, Msg) of
                 {reply, Reply} ->
-                    {ok, RespBody} = mcp_jsonrpc:encode(Reply),
+                    {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode(Reply),
                     Req = cowboy_req:reply(200, #{
                         <<"content-type">> => <<"application/json">>,
                         <<"mcp-session-id">> => SessionId
@@ -101,9 +112,9 @@ handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
 handle_single_message(#jsonrpc_request{} = Msg, Req0, State) ->
     case get_or_create_session(Req0, State) of
         {ok, Pid, Req1} ->
-            case mcp_session:handle_message(Pid, Msg) of
+            case erl_mcp_server_session:handle_message(Pid, Msg) of
                 {reply, Reply} ->
-                    {ok, RespBody} = mcp_jsonrpc:encode(Reply),
+                    {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode(Reply),
                     Req = cowboy_req:reply(200, #{
                         <<"content-type">> => <<"application/json">>
                     }, RespBody, Req1),
@@ -130,22 +141,20 @@ handle_batch(Messages, Req0, State) ->
         {ok, Pid, Req1} ->
             Replies = lists:filtermap(fun(Msg) ->
                 IsNotification = is_record(Msg, jsonrpc_notification),
-                case mcp_session:handle_message(Pid, Msg) of
+                case erl_mcp_server_session:handle_message(Pid, Msg) of
                     {reply, Reply} -> {true, Reply};
                     ok -> false;
                     {error, Reason} when not IsNotification ->
-                        %% Requests must always get a response
                         MsgId = case Msg of
                             #jsonrpc_request{id = I} -> I;
                             _ -> null
                         end,
                         ErrMsg = iolist_to_binary(
                             io_lib:format("~p", [Reason])),
-                        ErrReply = mcp_jsonrpc:error_response(
+                        ErrReply = erl_mcp_protocol_jsonrpc:error_response(
                             MsgId, ?INTERNAL_ERROR, ErrMsg),
                         {true, ErrReply};
                     {error, _} ->
-                        %% Notifications have no response
                         false
                 end
             end, Messages),
@@ -154,7 +163,7 @@ handle_batch(Messages, Req0, State) ->
                     Req = cowboy_req:reply(202, #{}, <<>>, Req1),
                     {ok, Req, State};
                 _ ->
-                    {ok, RespBody} = mcp_jsonrpc:encode({batch, Replies}),
+                    {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode({batch, Replies}),
                     Req = cowboy_req:reply(200, #{
                         <<"content-type">> => <<"application/json">>
                     }, RespBody, Req1),
@@ -181,7 +190,7 @@ handle_delete(Req0, State) ->
             Req = cowboy_req:reply(400, #{}, <<>>, Req0),
             {ok, Req, State};
         _ ->
-            case mcp_session_manager:remove_session(SessionId) of
+            case erl_mcp_server_session_manager:remove_session(SessionId) of
                 ok ->
                     Req = cowboy_req:reply(200, #{}, <<>>, Req0),
                     {ok, Req, State};
@@ -191,21 +200,23 @@ handle_delete(Req0, State) ->
             end
     end.
 
+%% @private
 get_or_create_session(Req0, _State) ->
     SessionId = cowboy_req:header(<<"mcp-session-id">>, Req0, undefined),
     case SessionId of
         undefined ->
             {error, Req0};
         _ ->
-            case mcp_session_manager:get_session(SessionId) of
+            case erl_mcp_server_session_manager:get_session(SessionId) of
                 {ok, Pid} -> {ok, Pid, Req0};
                 {error, not_found} -> {error, Req0}
             end
     end.
 
+%% @private
 send_jsonrpc_error(Id, Code, Message, Req0, State) ->
-    ErrResp = mcp_jsonrpc:error_response(Id, Code, Message),
-    {ok, RespBody} = mcp_jsonrpc:encode(ErrResp),
+    ErrResp = erl_mcp_protocol_jsonrpc:error_response(Id, Code, Message),
+    {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode(ErrResp),
     Req = cowboy_req:reply(200, #{
         <<"content-type">> => <<"application/json">>
     }, RespBody, Req0),

@@ -1,5 +1,5 @@
--module(mcp_json).
-%% @private
+-module(erl_mcp_protocol_json).
+%% @doc false
 %% Internal module -- thin wrapper over OTP 27 json module.
 
 -export([encode/1, decode/1]).

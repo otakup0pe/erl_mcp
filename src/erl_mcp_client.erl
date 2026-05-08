@@ -12,8 +12,8 @@
 
 -behaviour(gen_statem).
 
--include("mcp.hrl").
--include("mcp_client.hrl").
+-include("erl_mcp.hrl").
+-include("erl_mcp_client.hrl").
 
 -export([start_link/1, child_spec/1]).
 -export([call/4, list_tools/1, refresh_tools/1, update_auth/2, status/1,
@@ -309,7 +309,7 @@ send_initialize(#data{} = Data) ->
         <<"capabilities">> => Data1#data.capabilities,
         <<"clientInfo">> => client_info(Data1)
     },
-    Req = mcp_jsonrpc:request(Id, <<"initialize">>, Params),
+    Req = erl_mcp_protocol_jsonrpc:request(Id, <<"initialize">>, Params),
     case send_request_sync(Req, Data1) of
         {ok, #jsonrpc_response{result = Result}, Data2} ->
             Data3 = Data2#data{
@@ -329,7 +329,7 @@ send_initialize(#data{} = Data) ->
     end.
 
 send_initialized(Data) ->
-    Notif = mcp_jsonrpc:notification(<<"notifications/initialized">>, #{}),
+    Notif = erl_mcp_protocol_jsonrpc:notification(<<"notifications/initialized">>, #{}),
     send_notification(Notif, Data).
 
 client_info(#data{config = Config}) ->
@@ -340,7 +340,7 @@ client_info(#data{config = Config}) ->
 
 do_tools_list(Data) ->
     {Id, Data1} = next_id(Data),
-    Req = mcp_jsonrpc:request(Id, <<"tools/list">>, #{}),
+    Req = erl_mcp_protocol_jsonrpc:request(Id, <<"tools/list">>, #{}),
     case send_request_sync(Req, Data1) of
         {ok, #jsonrpc_response{result = Result}, Data2} ->
             Raw = maps:get(<<"tools">>, Result, []),
@@ -389,7 +389,7 @@ list_or_empty(L) -> L.
 do_tools_call(Name, Args, Timeout, Data) ->
     {Id, Data1} = next_id(Data),
     Params = #{<<"name">> => Name, <<"arguments">> => Args},
-    Req = mcp_jsonrpc:request(Id, <<"tools/call">>, Params),
+    Req = erl_mcp_protocol_jsonrpc:request(Id, <<"tools/call">>, Params),
     emit(Data1, #{event => tools_call_start, tool => Name}),
     case send_request_sync(Req, Data1, Timeout) of
         {ok, #jsonrpc_response{result = Result}, Data2} ->
@@ -439,7 +439,7 @@ send_request_sync(Req, #data{transport_mod = Mod,
                               transport_handle = H} = Data,
                   Timeout)
   when H =/= undefined ->
-    case mcp_jsonrpc:encode(Req) of
+    case erl_mcp_protocol_jsonrpc:encode(Req) of
         {ok, Body} ->
             case Mod:request(H, Body, Timeout) of
                 {ok, RespBody, H1} ->
@@ -457,7 +457,7 @@ send_request_sync(_Req, Data, _Timeout) ->
 send_notification(Notif, #data{transport_mod = Mod,
                                 transport_handle = H} = Data)
   when H =/= undefined ->
-    case mcp_jsonrpc:encode(Notif) of
+    case erl_mcp_protocol_jsonrpc:encode(Notif) of
         {ok, Body} ->
             case Mod:notify(H, Body) of
                 {ok, H1} ->
@@ -472,7 +472,7 @@ send_notification(_Notif, Data) ->
     {error, no_transport, Data}.
 
 decode_response(Body, Data) ->
-    case mcp_jsonrpc:decode(Body) of
+    case erl_mcp_protocol_jsonrpc:decode(Body) of
         {ok, #jsonrpc_response{} = Resp} ->
             {ok, Resp, Data};
         {ok, #jsonrpc_error{} = Err} ->

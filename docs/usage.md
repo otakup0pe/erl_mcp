@@ -3,17 +3,17 @@
 ## Implementing a Tool Handler
 
 Tools are the primary extension point for MCP servers. The
-`mcp_tool_handler` behaviour defines two callbacks:
+`erl_mcp_server_tool_handler` behaviour defines two callbacks:
 
 ```erlang
 -module(my_echo_handler).
--behaviour(mcp_tool_handler).
--include("mcp.hrl").
+-behaviour(erl_mcp_server_tool_handler).
+-include_lib("erl_mcp/include/erl_mcp.hrl").
 
 -export([tool_definition/0, handle_call/3]).
 
 tool_definition() ->
-    mcp_tool:new(
+    erl_mcp_server_tool:new(
         <<"echo">>,
         <<"Echoes the input text back">>,
         #{<<"type">> => <<"object">>,
@@ -24,7 +24,7 @@ tool_definition() ->
     ).
 
 handle_call(<<"echo">>, #{<<"text">> := Text}, _Context) ->
-    {ok, [mcp_content:text(Text)]};
+    {ok, [erl_mcp_protocol_content:text(Text)]};
 handle_call(<<"echo">>, _Args, _Context) ->
     {error, <<"Missing required argument: text">>}.
 ```
@@ -32,8 +32,9 @@ handle_call(<<"echo">>, _Args, _Context) ->
 `handle_call/3` receives the tool name, arguments map, and a context map.
 The context contains `#{session_id => BinaryId}` identifying the MCP
 session that invoked the tool. It returns `{ok, ContentList}` or
-`{error, Message}`. Content items are built with `mcp_content:text/1`,
-`mcp_content:image/2`, etc.
+`{error, Message}`. Content items are built with
+`erl_mcp_protocol_content:text/1`, `erl_mcp_protocol_content:image/2`,
+etc.
 
 ## Registering Tools and Starting the Server
 
@@ -49,12 +50,12 @@ start_my_server() ->
     Handler = fun(Args, Context) ->
         my_echo_handler:handle_call(Tool#tool.name, Args, Context)
     end,
-    ok = mcp_tool_registry:register_tool(Tool, Handler),
+    ok = erl_mcp_server_tool_registry:register_tool(Tool, Handler),
 
     %% Start cowboy with the MCP HTTP handler
     Dispatch = cowboy_router:compile([
-        {'_', [{"/mcp", mcp_http_handler, #{
-            handlers => mcp_protocol:default_handlers(),
+        {'_', [{"/mcp", erl_mcp_server_http_handler, #{
+            handlers => erl_mcp_server_protocol:default_handlers(),
             server_info => #implementation{
                 name = <<"my_server">>,
                 version = <<"1.0.0">>
@@ -66,15 +67,15 @@ start_my_server() ->
     }).
 ```
 
-The handler fun registered with `mcp_tool_registry` takes `(Args, Context)`
-where Context is `#{session_id => BinaryId}`. It returns
-`{ok, ContentList} | {error, Binary}`. You can wrap a behaviour module
-as shown above, or use an anonymous fun directly.
+The handler fun registered with `erl_mcp_server_tool_registry` takes
+`(Args, Context)` where Context is `#{session_id => BinaryId}`. It
+returns `{ok, ContentList} | {error, Binary}`. You can wrap a behaviour
+module as shown above, or use an anonymous fun directly.
 
 To unregister a tool:
 
 ```erlang
-ok = mcp_tool_registry:unregister_tool(<<"echo">>).
+ok = erl_mcp_server_tool_registry:unregister_tool(<<"echo">>).
 ```
 
 ## Session Lifecycle Hooks
@@ -85,8 +86,8 @@ delete). Pass it through the cowboy handler state:
 
 ```erlang
 Dispatch = cowboy_router:compile([
-    {'_', [{"/mcp", mcp_http_handler, #{
-        handlers => mcp_protocol:default_handlers(),
+    {'_', [{"/mcp", erl_mcp_server_http_handler, #{
+        handlers => erl_mcp_server_protocol:default_handlers(),
         server_info => #implementation{
             name = <<"my_server">>,
             version = <<"1.0.0">>
@@ -111,7 +112,7 @@ isolation:
 ```erlang
 Handler = fun(Args, #{session_id := SessionId}) ->
     Result = my_app:do_work(SessionId, Args),
-    {ok, [mcp_content:text(Result)]}
+    {ok, [erl_mcp_protocol_content:text(Result)]}
 end,
 ```
 
@@ -209,7 +210,7 @@ wrapped into a successful JSON-RPC response with `isError: true`:
 handle_call(<<"risky_tool">>, _Args, _State) ->
     case do_risky_thing() of
         {ok, Value} ->
-            {ok, [mcp_content:text(Value)]};
+            {ok, [erl_mcp_protocol_content:text(Value)]};
         {error, Reason} ->
             {error, iolist_to_binary(io_lib:format("Failed: ~p", [Reason]))}
     end.
@@ -268,7 +269,7 @@ Client config map keys (passed to `erl_mcp_client:start_link/1`):
 | `name` | term | `undefined` | Registration name for the gen_statem |
 | `id` | term | `erl_mcp_client` | Child spec ID |
 
-Protocol handler options (passed to `mcp_protocol:default_handlers/1`):
+Protocol handler options (passed to `erl_mcp_server_protocol:default_handlers/1`):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|

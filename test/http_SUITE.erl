@@ -1,7 +1,7 @@
 -module(http_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1,
          init_per_testcase/2, end_per_testcase/2]).
@@ -38,15 +38,12 @@ end_per_suite(_Config) ->
     ok.
 
 init_per_testcase(_TC, Config) ->
-    %% Clean up any lingering processes from previous tests
     catch cowboy:stop_listener(test_mcp_listener),
-    stop_if_alive(mcp_session_manager),
-    stop_if_alive(mcp_tool_registry),
-    %% Start session manager
-    {ok, MgrPid} = mcp_session_manager:start_link(),
+    stop_if_alive(erl_mcp_server_session_manager),
+    stop_if_alive(erl_mcp_server_tool_registry),
+    {ok, MgrPid} = erl_mcp_server_session_manager:start_link(),
     unlink(MgrPid),
-    %% Start tool registry and register a test tool
-    {ok, RegPid} = mcp_tool_registry:start_link(),
+    {ok, RegPid} = erl_mcp_server_tool_registry:start_link(),
     unlink(RegPid),
     EchoTool = #tool{
         name = <<"echo">>,
@@ -55,11 +52,10 @@ init_per_testcase(_TC, Config) ->
     },
     EchoHandler = fun(Args, _St) ->
         Msg = maps:get(<<"message">>, Args, <<"no message">>),
-        {ok, #{<<"content">> => [mcp_content:to_map(mcp_content:text(Msg))]}}
+        {ok, #{<<"content">> => [erl_mcp_protocol_content:to_map(erl_mcp_protocol_content:text(Msg))]}}
     end,
-    ok = mcp_tool_registry:register_tool(EchoTool, EchoHandler),
-    %% Start cowboy with MCP HTTP handler
-    ServerCaps = mcp_capability:server_capabilities(#{
+    ok = erl_mcp_server_tool_registry:register_tool(EchoTool, EchoHandler),
+    ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true}
     }),
     ServerInfo = #implementation{
@@ -67,13 +63,13 @@ init_per_testcase(_TC, Config) ->
         version = <<"0.1.0">>
     },
     HandlerState = #{
-        handlers => mcp_protocol:default_handlers(),
+        handlers => erl_mcp_server_protocol:default_handlers(),
         server_capabilities => ServerCaps,
         server_info => ServerInfo
     },
     Dispatch = cowboy_router:compile([
         {'_', [
-            {"/mcp", mcp_http_handler, HandlerState}
+            {"/mcp", erl_mcp_server_http_handler, HandlerState}
         ]}
     ]),
     {ok, _} = cowboy:start_clear(test_mcp_listener,
@@ -96,17 +92,15 @@ end_per_testcase(_TC, Config) ->
 
 post_initialize(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
-    InitReq = mcp_jsonrpc:request(1, <<"initialize">>, #{
+    InitReq = erl_mcp_protocol_jsonrpc:request(1, <<"initialize">>, #{
         <<"protocolVersion">> => ?MCP_PROTOCOL_VERSION,
         <<"capabilities">> => #{},
         <<"clientInfo">> => #{<<"name">> => <<"test">>, <<"version">> => <<"0">>}
     }),
     {ok, Body, Headers} = post_json(BaseUrl ++ "/mcp", InitReq),
-    %% Should have session ID in response headers
     SessionId = proplists:get_value("mcp-session-id", Headers),
     ?assertNotEqual(undefined, SessionId),
-    %% Body should be valid JSON-RPC response
-    {ok, Decoded} = mcp_jsonrpc:decode(Body),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
     ?assertMatch(#jsonrpc_response{id = 1}, Decoded),
     Result = Decoded#jsonrpc_response.result,
     ?assert(maps:is_key(<<"protocolVersion">>, Result)),
@@ -115,28 +109,25 @@ post_initialize(Config) ->
 
 post_ping_requires_session(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
-    PingReq = mcp_jsonrpc:request(1, <<"ping">>, #{}),
+    PingReq = erl_mcp_protocol_jsonrpc:request(1, <<"ping">>, #{}),
     {ok, _Body, _Headers, Status} = post_json_full(BaseUrl ++ "/mcp", PingReq, []),
-    %% Without session header, should get 404
     ?assertEqual(404, Status).
 
 post_ping_with_session(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
-    %% First initialize to get a session
     SessionId = do_initialize(BaseUrl),
-    %% Now ping with session header
-    PingReq = mcp_jsonrpc:request(2, <<"ping">>, #{}),
+    PingReq = erl_mcp_protocol_jsonrpc:request(2, <<"ping">>, #{}),
     ExtraHeaders = [{"mcp-session-id", SessionId}],
     {ok, Body, _Headers, Status} = post_json_full(BaseUrl ++ "/mcp", PingReq, ExtraHeaders),
     ?assertEqual(200, Status),
-    {ok, Decoded} = mcp_jsonrpc:decode(Body),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
     ?assertMatch(#jsonrpc_response{id = 2, result = #{}}, Decoded).
 
 post_notification_returns_202(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
     SessionId = do_initialize(BaseUrl),
-    Notif = mcp_jsonrpc:notification(<<"notifications/initialized">>, #{}),
-    {ok, Bin} = mcp_jsonrpc:encode(Notif),
+    Notif = erl_mcp_protocol_jsonrpc:notification(<<"notifications/initialized">>, #{}),
+    {ok, Bin} = erl_mcp_protocol_jsonrpc:encode(Notif),
     ExtraHeaders = [{"mcp-session-id", SessionId},
                     {"content-type", "application/json"}],
     {ok, {{_, Status, _}, _, _}} = httpc:request(post,
@@ -149,16 +140,16 @@ post_invalid_json_returns_parse_error(Config) ->
     {ok, {{_, 200, _}, _, Body}} = httpc:request(post,
         {BaseUrl ++ "/mcp", [], "application/json", <<"not json">>},
         [], [{body_format, binary}]),
-    {ok, Decoded} = mcp_jsonrpc:decode(Body),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
     ?assertMatch(#jsonrpc_error{code = ?PARSE_ERROR}, Decoded).
 
 post_tools_list(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
     SessionId = do_initialize(BaseUrl),
-    ListReq = mcp_jsonrpc:request(3, <<"tools/list">>, #{}),
+    ListReq = erl_mcp_protocol_jsonrpc:request(3, <<"tools/list">>, #{}),
     ExtraHeaders = [{"mcp-session-id", SessionId}],
     {ok, Body, _H, 200} = post_json_full(BaseUrl ++ "/mcp", ListReq, ExtraHeaders),
-    {ok, Decoded} = mcp_jsonrpc:decode(Body),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
     ?assertMatch(#jsonrpc_response{id = 3}, Decoded),
     Tools = maps:get(<<"tools">>, Decoded#jsonrpc_response.result),
     ?assert(length(Tools) >= 1),
@@ -168,13 +159,13 @@ post_tools_list(Config) ->
 post_tools_call(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
     SessionId = do_initialize(BaseUrl),
-    CallReq = mcp_jsonrpc:request(4, <<"tools/call">>, #{
+    CallReq = erl_mcp_protocol_jsonrpc:request(4, <<"tools/call">>, #{
         <<"name">> => <<"echo">>,
         <<"arguments">> => #{<<"message">> => <<"hi there">>}
     }),
     ExtraHeaders = [{"mcp-session-id", SessionId}],
     {ok, Body, _H, 200} = post_json_full(BaseUrl ++ "/mcp", CallReq, ExtraHeaders),
-    {ok, Decoded} = mcp_jsonrpc:decode(Body),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
     ?assertMatch(#jsonrpc_response{id = 4}, Decoded),
     Result = Decoded#jsonrpc_response.result,
     Content = maps:get(<<"content">>, Result),
@@ -202,7 +193,7 @@ delete_nonexistent_session(Config) ->
 %%--------------------------------------------------------------------
 
 do_initialize(BaseUrl) ->
-    InitReq = mcp_jsonrpc:request(1, <<"initialize">>, #{
+    InitReq = erl_mcp_protocol_jsonrpc:request(1, <<"initialize">>, #{
         <<"protocolVersion">> => ?MCP_PROTOCOL_VERSION,
         <<"capabilities">> => #{},
         <<"clientInfo">> => #{<<"name">> => <<"test">>, <<"version">> => <<"0">>}
@@ -217,14 +208,14 @@ stop_if_alive(Name) ->
     end.
 
 post_json(Url, Message) ->
-    {ok, Bin} = mcp_jsonrpc:encode(Message),
+    {ok, Bin} = erl_mcp_protocol_jsonrpc:encode(Message),
     {ok, {{_, _Status, _}, Headers, Body}} = httpc:request(post,
         {Url, [], "application/json", Bin},
         [], [{body_format, binary}]),
     {ok, Body, Headers}.
 
 post_json_full(Url, Message, ExtraHeaders) ->
-    {ok, Bin} = mcp_jsonrpc:encode(Message),
+    {ok, Bin} = erl_mcp_protocol_jsonrpc:encode(Message),
     AllHeaders = [{"content-type", "application/json"} | ExtraHeaders],
     {ok, {{_, Status, _}, Headers, Body}} = httpc:request(post,
         {Url, AllHeaders, "application/json", Bin},

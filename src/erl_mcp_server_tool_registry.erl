@@ -1,14 +1,24 @@
--module(mcp_tool_registry).
+-module(erl_mcp_server_tool_registry).
 
 %% @doc ETS-backed registry for MCP tools.
 %%
 %% Supports register, unregister, lookup, and list with cursor-based
 %% pagination. Notifies change listeners when the tool set changes.
 %% Typically started as part of the `erl_mcp' supervision tree.
+%%
+%% Example:
+%% ```
+%% Tool = erl_mcp_server_tool:new(<<"echo">>, <<"Echoes input">>,
+%%     #{<<"type">> => <<"object">>}),
+%% Handler = fun(Args, _Ctx) ->
+%%     {ok, [erl_mcp_protocol_content:text(maps:get(<<"input">>, Args))]}
+%% end,
+%% ok = erl_mcp_server_tool_registry:register_tool(Tool, Handler).
+%% '''
 
 -behaviour(gen_server).
 
--include("mcp.hrl").
+-include("erl_mcp.hrl").
 
 -export([start_link/0]).
 -export([register_tool/2, unregister_tool/1, lookup/1, list_tools/0,
@@ -34,7 +44,7 @@ start_link() ->
 %% @doc Register a tool and its handler function.
 %%
 %% The handler is `fun((Args :: map(), State :: term()) -> ...)' and is
-%% invoked by {@link mcp_protocol:handle_tools_call/2} when the tool is called.
+%% invoked by {@link erl_mcp_server_protocol:handle_tools_call/2} when the tool is called.
 -spec register_tool(#tool{}, fun()) -> ok | {error, already_registered}.
 register_tool(Tool, Handler) ->
     gen_server:call(?MODULE, {register, Tool, Handler}).
@@ -65,7 +75,6 @@ list_tools() ->
 %% The returned cursor is `undefined' when there are no more pages.
 -spec list_tools(map()) -> {[#tool{}], undefined | binary()}.
 list_tools(#{cursor := Cursor, page_size := PageSize}) ->
-    %% Cursor-based pagination. Cursor is the tool name to start after.
     All = lists:sort(fun(A, B) ->
         A#tool_entry.name =< B#tool_entry.name
     end, ets:tab2list(?MODULE)),
@@ -120,6 +129,7 @@ handle_cast(_Msg, State) ->
 terminate(_Reason, _State) ->
     ok.
 
+%% @private
 notify_change(#state{change_listeners = Listeners}) ->
     [Pid ! {mcp_tools_changed} || Pid <- Listeners, is_process_alive(Pid)],
     ok.
