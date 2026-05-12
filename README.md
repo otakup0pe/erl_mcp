@@ -57,6 +57,8 @@ cowboy:start_clear(my_mcp, [{port, 8080}],
 |-----------|------|--------|--------|
 | HTTP streamable | Server | `erl_mcp_server_http_handler` | Shipped |
 | HTTP streamable | Client | `erl_mcp_transport_http_streamable` | Shipped |
+| Local (in-VM + cross-node) | Server | `erl_mcp_server_local` | Shipped |
+| Local (in-VM + cross-node) | Client | `erl_mcp_transport_local` | Shipped |
 | SSE | -- | `erl_mcp_protocol_sse` | Encode/decode only |
 | stdio | -- | -- | Deferred |
 
@@ -70,10 +72,24 @@ cowboy:start_clear(my_mcp, [{port, 8080}],
 
 See `src/erl_mcp.app.src` for the full set.
 
+### Local transport: connect client and server in the same BEAM
+
+```erlang
+{ok, Server} = erl_mcp_server_local:start_link(#{
+    handlers => erl_mcp_server_protocol:default_handlers()
+}),
+{ok, Client} = erl_mcp_client:start_link(#{
+    transport => erl_mcp_transport_local,
+    server_pid => Server
+}),
+{ok, Result} = erl_mcp_client:call(Client, <<"echo">>, #{<<"input">> => <<"hi">>}, 5000).
+```
+
 ## Features
 
 - **Server framework** -- behaviour-based tool handlers with registry
 - **Client** -- gen_statem client with reconnect, tool caching, prefixing
+- **Local transport** -- Erlang-message-passing client/server (in-VM and cross-node within a cluster), no HTTP, same protocol semantics
 - **Tool registry** -- ETS-backed, paginated, change notifications
 - **HTTP transport** -- Cowboy-based streamable HTTP (MCP 2025-06-18)
 - **SSE** -- Server-Sent Events encoding and decoding

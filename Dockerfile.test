@@ -1,18 +1,22 @@
 FROM erlang:27-slim
 
-RUN apt-get update && apt-get install -y make git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y make git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install rebar3
-RUN git clone https://github.com/erlang/rebar3.git /tmp/rebar3 && \
-    cd /tmp/rebar3 && ./bootstrap && \
-    install -m 755 /tmp/rebar3/rebar3 /usr/local/bin/rebar3 && \
-    rm -rf /tmp/rebar3
+# Pre-populate system-wide known_hosts. erl_mcp's deps are public
+# (cowboy from Hex), but the SSH plumbing is included for symmetry
+# with klotho and moirai and for any future SSH dep additions.
+RUN mkdir -p /etc/ssh \
+    && ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts 2>/dev/null \
+    && chmod 644 /etc/ssh/ssh_known_hosts
 
-COPY rebar.config ./
-RUN rebar3 get-deps || true
+# Install rebar3 from source.
+RUN git clone https://github.com/erlang/rebar3.git /tmp/rebar3 \
+    && cd /tmp/rebar3 && ./bootstrap \
+    && install -m 755 /tmp/rebar3/rebar3 /usr/local/bin/rebar3 \
+    && rm -rf /tmp/rebar3
 
-COPY . .
-
-CMD ["make", "test"]
+CMD ["make", "local-test"]

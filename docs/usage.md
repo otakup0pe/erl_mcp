@@ -199,6 +199,111 @@ The `auth` config key supports several forms:
 #{auth => none}  %% default
 ```
 
+## Local Transport (Erlang Message Passing)
+
+For connecting a client to a server reachable via Erlang message
+passing -- the same BEAM node, OR another node within an Erlang
+cluster. No HTTP. Same JSON-RPC envelope, same protocol semantics,
+same client/server module surface -- only the transport differs.
+
+### Starting a Local Server
+
+`erl_mcp_server_local` is a gen_server that wraps an MCP session
+and accepts messages from the local transport:
+
+```erlang
+application:ensure_all_started(erl_mcp),
+
+%% Register tools as usual
+Tool = erl_mcp_server_tool:new(<<"echo">>, <<"Echoes input">>,
+    #{<<"type">> => <<"object">>,
+      <<"properties">> => #{
+          <<"text">> => #{<<"type">> => <<"string">>}
+      }}),
+Handler = fun(#{<<"text">> := Text}, _Ctx) ->
+    {ok, [erl_mcp_protocol_content:text(Text)]}
+end,
+ok = erl_mcp_server_tool_registry:register_tool(Tool, Handler),
+
+%% Start the local server (no cowboy required)
+{ok, Server} = erl_mcp_server_local:start_link(#{
+    handlers => erl_mcp_server_protocol:default_handlers(),
+    server_info => #implementation{
+        name = <<"my_local_server">>,
+        version = <<"1.0.0">>
+    }
+}).
+```
+
+### Connecting a Client via Local Transport
+
+Pass `transport => erl_mcp_transport_local` and `server_pid` in the
+client config:
+
+```erlang
+{ok, Client} = erl_mcp_client:start_link(#{
+    transport => erl_mcp_transport_local,
+    server_pid => Server,
+    tool_prefix => <<"local">>
+}),
+
+%% Use exactly the same API as HTTP clients
+{ok, Tools} = erl_mcp_client:list_tools(Client),
+{ok, Result} = erl_mcp_client:call(Client,
+    <<"local__echo">>, #{<<"text">> => <<"hello">>}, 5000).
+```
+
+### Named Servers
+
+You can register the local server under a name for easier
+reference:
+
+```erlang
+{ok, _} = erl_mcp_server_local:start_link(
+    {local, my_mcp_server}, #{
+        handlers => erl_mcp_server_protocol:default_handlers()
+    }),
+
+{ok, Client} = erl_mcp_client:start_link(#{
+    transport => erl_mcp_transport_local,
+    server_pid => my_mcp_server
+}).
+```
+
+The `server_pid` config key accepts:
+
+- a pid (local or remote)
+- a locally registered atom
+- `{Name, Node}` -- a registered name on a remote node
+- `{global, Name}` -- a globally registered name
+- `{via, Module, Name}` -- a name in any registry implementing
+  the `via` protocol
+
+### Cross-Node Connections
+
+When the server lives on another node within the cluster, pass
+the `{Name, Node}` form (or a remote pid). Erlang's distributed
+primitives handle the dispatch; the transport doesn't need any
+HTTP or special configuration:
+
+```erlang
+%% On the server node 'agent@host':
+{ok, _} = erl_mcp_server_local:start_link(
+    {local, mcp_server}, #{
+        handlers => erl_mcp_server_protocol:default_handlers()
+    }).
+
+%% On the client node, after net_kernel connects to 'agent@host':
+{ok, Client} = erl_mcp_client:start_link(#{
+    transport => erl_mcp_transport_local,
+    server_pid => {mcp_server, 'agent@host'}
+}).
+```
+
+Net partitions or remote-process death surface as
+`{error, server_down, _}` from `erl_mcp_client:call/4`, identical
+to the local-VM behavior.
+
 ## Error Handling
 
 ### Server Side
@@ -257,7 +362,8 @@ Client config map keys (passed to `erl_mcp_client:start_link/1`):
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `server_url` | binary | required | URL of the MCP server |
+| `server_url` | binary | required | URL of the MCP server (HTTP transport) |
+| `server_pid` | pid \| atom \| `{Name, Node}` \| `{global, _}` \| `{via, _, _}` | -- | Target `erl_mcp_server_local` for the local transport (in-VM or cross-node) |
 | `auth` | term | `none` | Authentication config (see above) |
 | `transport` | module | `erl_mcp_transport_http_streamable` | Transport module |
 | `protocol_version` | binary | `<<"2025-06-18">>` | MCP protocol version to request |

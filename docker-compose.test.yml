@@ -9,6 +9,12 @@ services:
       - .:/app
       - build_cache:/app/_build
       - rebar3_cache:/root/.cache/rebar3
+      # erl_mcp deps (cowboy) are public and don't need SSH, but the
+      # plumbing is included for symmetry with klotho/moirai. Falls
+      # back to /dev/null when SSH_AUTH_SOCK is unset on the host.
+      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
+    environment:
+      SSH_AUTH_SOCK: /ssh-agent
     command: ["make", "local-test"]
 
 volumes:

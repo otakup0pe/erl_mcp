@@ -38,6 +38,8 @@ These modules are the supported public interface:
 | `erl_mcp_client` | gen_statem MCP client with reconnect, tool cache, prefixing |
 | `erl_mcp_client_sup` | simple_one_for_one supervisor for dynamic client pools |
 | `erl_mcp_transport` | Client transport behaviour (connect/request/notify/close) |
+| `erl_mcp_transport_local` | Erlang-message-passing client transport (in-VM and cross-node) |
+| `erl_mcp_server_local` | Server endpoint for the local transport (no HTTP) |
 
 ## Internal Modules
 
