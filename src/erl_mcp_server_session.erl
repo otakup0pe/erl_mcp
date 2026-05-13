@@ -13,7 +13,7 @@
 
 -export([start_link/1, start_link/2]).
 -export([handle_message/2, send_request/3, send_notification/2]).
--export([get_state/1, get_capabilities/1]).
+-export([get_state/1, get_capabilities/1, promote/2]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -84,6 +84,17 @@ get_state(Session) ->
 get_capabilities(Session) ->
     gen_server:call(Session, get_capabilities).
 
+%% @doc Promote a rebuilt session to initialized status.
+%%
+%% Used by the session manager when restoring a persisted session.
+%% Injects the client info and capabilities from the original
+%% handshake so the session can accept tool calls without
+%% re-initialization. Only succeeds when the session is in
+%% `uninitialized' status.
+-spec promote(pid(), map()) -> ok | {error, already_initialized}.
+promote(Session, Meta) ->
+    gen_server:call(Session, {promote, Meta}).
+
 init(Opts) ->
     Id = maps:get(id, Opts, generate_session_id()),
     Role = maps:get(role, Opts, server),
@@ -153,6 +164,31 @@ handle_call(get_capabilities, _From, #state{status = initialized} = State) ->
     {reply, {ok, Caps}, State};
 handle_call(get_capabilities, _From, State) ->
     {reply, {error, not_initialized}, State};
+
+handle_call({promote, Meta}, _From,
+            #state{status = uninitialized} = State) ->
+    ClientInfo = case maps:get(client_info, Meta, undefined) of
+        undefined -> undefined;
+        CI when is_map(CI) ->
+            #implementation{
+                name = maps:get(<<"name">>, CI, maps:get(name, CI, <<"unknown">>)),
+                version = maps:get(<<"version">>, CI, maps:get(version, CI, <<"0.0.0">>))
+            };
+        #implementation{} = CI -> CI
+    end,
+    ClientCaps = case maps:get(client_capabilities, Meta, undefined) of
+        undefined -> undefined;
+        CC when is_map(CC) ->
+            erl_mcp_protocol_capability:parse_client(CC);
+        CC -> CC
+    end,
+    {reply, ok, State#state{
+        status = initialized,
+        client_info = ClientInfo,
+        client_capabilities = ClientCaps
+    }};
+handle_call({promote, _Meta}, _From, State) ->
+    {reply, {error, already_initialized}, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -349,6 +385,7 @@ handle_initialize(Id, Params, State) ->
         client_info = ClientInfo,
         server_capabilities = NegotiatedCaps
     },
+    notify_initialized(NewState),
     {reply, Reply, NewState}.
 
 handle_cancellation(Params, State) ->
@@ -435,3 +472,16 @@ reset_idle_timer(#state{idle_timer = OldTimer,
 generate_session_id() ->
     Bytes = crypto:strong_rand_bytes(16),
     base64:encode(Bytes, #{mode => urlsafe, padding => false}).
+
+notify_initialized(#state{id = SessionId,
+                          client_info = ClientInfo,
+                          client_capabilities = ClientCaps}) ->
+    Meta = #{client_info => format_client_info(ClientInfo),
+             client_capabilities => ClientCaps},
+    gen_server:cast(erl_mcp_server_session_manager,
+                    {session_initialized, SessionId, Meta}).
+
+format_client_info(undefined) -> undefined;
+format_client_info(#implementation{name = N, version = V}) ->
+    #{name => N, version => V};
+format_client_info(Other) -> Other.
