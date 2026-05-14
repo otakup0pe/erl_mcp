@@ -44,7 +44,7 @@ docker-shell: docker-build
 local-compile:
 	$(REBAR3) compile
 
-local-test: local-eunit local-ct
+local-test: local-eunit local-ct local-dialyzer
 
 local-eunit:
 	$(REBAR3) eunit

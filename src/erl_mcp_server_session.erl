@@ -481,7 +481,5 @@ notify_initialized(#state{id = SessionId,
     gen_server:cast(erl_mcp_server_session_manager,
                     {session_initialized, SessionId, Meta}).
 
-format_client_info(undefined) -> undefined;
 format_client_info(#implementation{name = N, version = V}) ->
-    #{name => N, version => V};
-format_client_info(Other) -> Other.
+    #{name => N, version => V}.
