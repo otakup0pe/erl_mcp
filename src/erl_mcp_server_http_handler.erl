@@ -38,10 +38,10 @@ init(Req0, State) ->
 
 handle_post(Req0, State) ->
     MaxBody = application:get_env(erl_mcp, max_request_body, 1048576),
-    case cowboy_req:read_body(Req0, #{length => MaxBody, period => 15000}) of
+    case read_full_body(Req0, MaxBody) of
         {ok, Body, Req1} ->
             handle_post_body(Body, Req1, State);
-        {more, _, Req1} ->
+        {error, too_large, Req1} ->
             Req2 = cowboy_req:reply(413,
                 #{<<"content-type">> => <<"application/json">>},
                 <<"{\"error\":\"Request body too large\"}">>,
@@ -55,7 +55,8 @@ handle_post_body(Body, Req1, State) ->
             handle_batch(Messages, Req1, State);
         {ok, Message} ->
             handle_single_message(Message, Req1, State);
-        {error, _Reason} ->
+        {error, Reason} ->
+            logger:warning("http_handler: JSON-RPC decode error: ~p", [Reason]),
             send_jsonrpc_error(null, ?PARSE_ERROR,
                                <<"Parse error">>, Req1, State)
     end.
@@ -221,3 +222,23 @@ send_jsonrpc_error(Id, Code, Message, Req0, State) ->
         <<"content-type">> => <<"application/json">>
     }, RespBody, Req0),
     {ok, Req, State}.
+
+%% @private Read the full request body, accumulating chunks.
+%% Returns `{ok, Body, Req}' when the complete body has been read,
+%% or `{error, too_large, Req}' when the accumulated size exceeds MaxBody.
+read_full_body(Req, MaxBody) ->
+    read_full_body(Req, MaxBody, <<>>).
+
+read_full_body(Req0, MaxBody, Acc) ->
+    case cowboy_req:read_body(Req0, #{length => 65536, period => 5000}) of
+        {ok, Data, Req1} ->
+            Total = <<Acc/binary, Data/binary>>,
+            if byte_size(Total) > MaxBody -> {error, too_large, Req1};
+               true -> {ok, Total, Req1}
+            end;
+        {more, Data, Req1} ->
+            Total = <<Acc/binary, Data/binary>>,
+            if byte_size(Total) > MaxBody -> {error, too_large, Req1};
+               true -> read_full_body(Req1, MaxBody, Total)
+            end
+    end.

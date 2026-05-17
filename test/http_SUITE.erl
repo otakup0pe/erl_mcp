@@ -13,6 +13,9 @@
     post_invalid_json_returns_parse_error/1,
     post_tools_list/1,
     post_tools_call/1,
+    post_large_body_tools_call/1,
+    post_oversized_body/1,
+    post_handler_exception/1,
     delete_session/1,
     delete_nonexistent_session/1
 ]).
@@ -25,6 +28,9 @@ all() -> [
     post_invalid_json_returns_parse_error,
     post_tools_list,
     post_tools_call,
+    post_large_body_tools_call,
+    post_oversized_body,
+    post_handler_exception,
     delete_session,
     delete_nonexistent_session
 ].
@@ -55,6 +61,15 @@ init_per_testcase(_TC, Config) ->
         {ok, #{<<"content">> => [erl_mcp_protocol_content:to_map(erl_mcp_protocol_content:text(Msg))]}}
     end,
     ok = erl_mcp_server_tool_registry:register_tool(EchoTool, EchoHandler),
+    CrashTool = #tool{
+        name = <<"crash">>,
+        description = <<"Always throws">>,
+        input_schema = #{<<"type">> => <<"object">>}
+    },
+    CrashHandler = fun(_Args, _St) ->
+        error(deliberate_test_crash)
+    end,
+    ok = erl_mcp_server_tool_registry:register_tool(CrashTool, CrashHandler),
     ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true}
     }),
@@ -153,8 +168,8 @@ post_tools_list(Config) ->
     ?assertMatch(#jsonrpc_response{id = 3}, Decoded),
     Tools = maps:get(<<"tools">>, Decoded#jsonrpc_response.result),
     ?assert(length(Tools) >= 1),
-    [First | _] = Tools,
-    ?assertEqual(<<"echo">>, maps:get(<<"name">>, First)).
+    ToolNames = [maps:get(<<"name">>, T) || T <- Tools],
+    ?assert(lists:member(<<"echo">>, ToolNames)).
 
 post_tools_call(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
@@ -172,6 +187,56 @@ post_tools_call(Config) ->
     ?assertEqual(1, length(Content)),
     [C] = Content,
     ?assertEqual(<<"hi there">>, maps:get(<<"text">>, C)).
+
+post_large_body_tools_call(Config) ->
+    BaseUrl = proplists:get_value(base_url, Config),
+    SessionId = do_initialize(BaseUrl),
+    %% Build a large argument (~60KB) that stays under the default 1MB limit.
+    LargeValue = list_to_binary(lists:duplicate(60000, $x)),
+    CallReq = erl_mcp_protocol_jsonrpc:request(5, <<"tools/call">>, #{
+        <<"name">> => <<"echo">>,
+        <<"arguments">> => #{<<"message">> => LargeValue}
+    }),
+    ExtraHeaders = [{"mcp-session-id", SessionId}],
+    {ok, Body, _H, Status} = post_json_full(BaseUrl ++ "/mcp", CallReq, ExtraHeaders),
+    ?assertEqual(200, Status),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
+    ?assertMatch(#jsonrpc_response{id = 5}, Decoded),
+    Result = Decoded#jsonrpc_response.result,
+    Content = maps:get(<<"content">>, Result),
+    [C] = Content,
+    ?assertEqual(LargeValue, maps:get(<<"text">>, C)).
+
+post_oversized_body(Config) ->
+    BaseUrl = proplists:get_value(base_url, Config),
+    %% Set a very small max_request_body so we can trigger the limit easily.
+    OldVal = application:get_env(erl_mcp, max_request_body),
+    application:set_env(erl_mcp, max_request_body, 256),
+    try
+        OversizedPayload = list_to_binary(lists:duplicate(1024, $a)),
+        ExtraHeaders = [{"content-type", "application/json"}],
+        {ok, {{_, Status, _}, _, _}} = httpc:request(post,
+            {BaseUrl ++ "/mcp", ExtraHeaders, "application/json", OversizedPayload},
+            [], [{body_format, binary}]),
+        ?assertEqual(413, Status)
+    after
+        case OldVal of
+            undefined -> application:unset_env(erl_mcp, max_request_body);
+            {ok, V} -> application:set_env(erl_mcp, max_request_body, V)
+        end
+    end.
+
+post_handler_exception(Config) ->
+    BaseUrl = proplists:get_value(base_url, Config),
+    SessionId = do_initialize(BaseUrl),
+    CallReq = erl_mcp_protocol_jsonrpc:request(6, <<"tools/call">>, #{
+        <<"name">> => <<"crash">>,
+        <<"arguments">> => #{}
+    }),
+    ExtraHeaders = [{"mcp-session-id", SessionId}],
+    {ok, Body, _H, 200} = post_json_full(BaseUrl ++ "/mcp", CallReq, ExtraHeaders),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
+    ?assertMatch(#jsonrpc_error{id = 6, code = ?INTERNAL_ERROR}, Decoded).
 
 delete_session(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),

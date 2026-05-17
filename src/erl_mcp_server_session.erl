@@ -341,6 +341,12 @@ spawn_handler(Handler, Params, From, Id, State) ->
             error:badarith ->
                 ErrMsg = iolist_to_binary(
                     io_lib:format("error:badarith", [])),
+                {error, ?INTERNAL_ERROR, ErrMsg};
+            Class:Reason:Stacktrace ->
+                logger:error("handler exception ~p:~p~n~p",
+                             [Class, Reason, Stacktrace]),
+                ErrMsg = iolist_to_binary(
+                    io_lib:format("~p:~p", [Class, Reason])),
                 {error, ?INTERNAL_ERROR, ErrMsg}
         end,
         SessionPid ! {handler_result, Ref, Result}
