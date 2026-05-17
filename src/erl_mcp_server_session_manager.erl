@@ -10,7 +10,8 @@
 -behaviour(gen_server).
 
 -export([start_link/0]).
--export([create_session/1, get_session/1, remove_session/1, list_sessions/0]).
+-export([create_session/1, get_session/1, remove_session/1, list_sessions/0,
+         update_opts_template/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -41,6 +42,10 @@ remove_session(SessionId) ->
 list_sessions() ->
     gen_server:call(?MODULE, list_sessions).
 
+-spec update_opts_template(map()) -> ok.
+update_opts_template(Template) when is_map(Template) ->
+    gen_server:cast(?MODULE, {update_opts_template, Template}).
+
 init([]) ->
     StoreConfig = application:get_env(erl_mcp, session_store, undefined),
     OnRebuild = application:get_env(erl_mcp, on_session_rebuild, undefined),
@@ -59,10 +64,10 @@ init([]) ->
 handle_call({create_session, Opts}, _From, State) ->
     case erl_mcp_server_session:start_link(Opts) of
         {ok, Pid} ->
+            MonRef = monitor(process, Pid),
             unlink(Pid),
             Info = erl_mcp_server_session:get_state(Pid),
             SessionId = maps:get(id, Info),
-            MonRef = monitor(process, Pid),
             Sessions = maps:put(SessionId, Pid, State#state.sessions),
             Monitors = maps:put(MonRef, SessionId, State#state.monitors),
             NewState = State#state{sessions = Sessions, monitors = Monitors},
@@ -98,20 +103,26 @@ handle_call({remove_session, SessionId}, _From, State) ->
 handle_call(list_sessions, _From, State) ->
     {reply, maps:keys(State#state.sessions), State};
 
+handle_call({session_initialized, SessionId, Meta}, _From, State) ->
+    {reply, ok, store_persist(SessionId, Meta, State)};
+
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
-handle_cast({session_initialized, SessionId, Meta}, State) ->
-    {noreply, store_persist(SessionId, Meta, State)};
+handle_cast({update_opts_template, Template}, State) ->
+    logger:info("session_manager: opts template updated"),
+    {noreply, State#state{session_opts_template = Template}};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', MonRef, process, _Pid, _Reason}, State) ->
+handle_info({'DOWN', MonRef, process, _Pid, Reason}, State) ->
     case maps:take(MonRef, State#state.monitors) of
         {SessionId, Monitors} ->
             Sessions = maps:remove(SessionId, State#state.sessions),
-            {noreply, State#state{sessions = Sessions, monitors = Monitors}};
+            State1 = State#state{sessions = Sessions, monitors = Monitors},
+            State2 = maybe_remove_on_shutdown(Reason, SessionId, State1),
+            {noreply, State2};
         error ->
             {noreply, State}
     end;
@@ -160,19 +171,47 @@ init_store({Mod, Opts}) ->
             undefined
     end.
 
-store_persist(SessionId, Meta, #state{store = undefined} = State) ->
-    _ = SessionId,
-    _ = Meta,
+store_persist(_SessionId, _Meta, #state{store = undefined} = State) ->
     State;
 store_persist(SessionId, Meta, #state{store = {Mod, StoreState}} = State) ->
-    {ok, StoreState1} = Mod:persist(SessionId, Meta, StoreState),
-    State#state{store = {Mod, StoreState1}}.
+    try Mod:persist(SessionId, Meta, StoreState) of
+        {ok, StoreState1} ->
+            State#state{store = {Mod, StoreState1}};
+        {error, Reason} ->
+            logger:warning("session_manager: persist failed for ~s: ~p",
+                           [SessionId, Reason]),
+            State
+    catch
+        error:badarg ->
+            logger:warning("session_manager: persist store table missing "
+                           "for ~s", [SessionId]),
+            State;
+        error:{badmatch, {error, DetsErr}} ->
+            logger:warning("session_manager: persist storage error for "
+                           "~s: ~p", [SessionId, DetsErr]),
+            State
+    end.
 
 store_remove(_SessionId, #state{store = undefined} = State) ->
     State;
 store_remove(SessionId, #state{store = {Mod, StoreState}} = State) ->
-    {ok, StoreState1} = Mod:remove(SessionId, StoreState),
-    State#state{store = {Mod, StoreState1}}.
+    try Mod:remove(SessionId, StoreState) of
+        {ok, StoreState1} ->
+            State#state{store = {Mod, StoreState1}};
+        {error, Reason} ->
+            logger:warning("session_manager: remove failed for ~s: ~p",
+                           [SessionId, Reason]),
+            State
+    catch
+        error:badarg ->
+            logger:warning("session_manager: remove store table missing "
+                           "for ~s", [SessionId]),
+            State;
+        error:{badmatch, {error, DetsErr}} ->
+            logger:warning("session_manager: remove storage error for "
+                           "~s: ~p", [SessionId, DetsErr]),
+            State
+    end.
 
 try_rebuild(_SessionId, #state{store = undefined} = State) ->
     {error, not_found, State};
@@ -184,10 +223,10 @@ try_rebuild(SessionId, #state{store = {Mod, StoreState},
             Opts = Template#{id => SessionId},
             case erl_mcp_server_session:start_link(Opts) of
                 {ok, Pid} ->
+                    MonRef = monitor(process, Pid),
                     unlink(Pid),
                     case erl_mcp_server_session:promote(Pid, Meta) of
                         ok ->
-                            MonRef = monitor(process, Pid),
                             Sessions = maps:put(SessionId, Pid,
                                                 State#state.sessions),
                             Monitors = maps:put(MonRef, SessionId,
@@ -200,6 +239,7 @@ try_rebuild(SessionId, #state{store = {Mod, StoreState},
                                          monitors = Monitors,
                                          store = {Mod, StoreState1}}};
                         {error, Reason} ->
+                            demonitor(MonRef, [flush]),
                             gen_server:stop(Pid, shutdown, 1000),
                             logger:warning("session_manager: promote "
                                            "failed for ~s: ~p",
@@ -217,6 +257,11 @@ try_rebuild(SessionId, #state{store = {Mod, StoreState},
         {not_found, StoreState1} ->
             {error, not_found, State#state{store = {Mod, StoreState1}}}
     end.
+
+maybe_remove_on_shutdown({shutdown, idle_timeout}, SessionId, State) ->
+    store_remove(SessionId, State);
+maybe_remove_on_shutdown(_Reason, _SessionId, State) ->
+    State.
 
 fire_on_rebuild(undefined, _SessionId) -> ok;
 fire_on_rebuild(Fun, SessionId) when is_function(Fun, 1) ->

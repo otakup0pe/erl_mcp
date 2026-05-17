@@ -63,6 +63,8 @@ end_per_suite(_Config) ->
 init_per_group(_Group, Config) ->
     stop_if_alive(erl_mcp_server_tool_registry),
     stop_if_alive(erl_mcp_server_session_manager),
+    {ok, MgrPid} = erl_mcp_server_session_manager:start_link(),
+    unlink(MgrPid),
     {ok, RegPid} = erl_mcp_server_tool_registry:start_link(),
     unlink(RegPid),
     %% Register echo tool
@@ -94,7 +96,11 @@ init_per_group(_Group, Config) ->
 
 end_per_group(_Group, Config) ->
     RegPid = proplists:get_value(reg_pid, Config),
-    catch gen_server:stop(RegPid).
+    catch gen_server:stop(RegPid),
+    case whereis(erl_mcp_server_session_manager) of
+        undefined -> ok;
+        Pid -> gen_server:stop(Pid, normal, 5000)
+    end.
 
 %%--------------------------------------------------------------------
 %% Testcase setup

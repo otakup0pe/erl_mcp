@@ -478,8 +478,27 @@ notify_initialized(#state{id = SessionId,
                           client_capabilities = ClientCaps}) ->
     Meta = #{client_info => format_client_info(ClientInfo),
              client_capabilities => ClientCaps},
-    gen_server:cast(erl_mcp_server_session_manager,
-                    {session_initialized, SessionId, Meta}).
+    case whereis(erl_mcp_server_session_manager) of
+        undefined ->
+            ok;
+        _Pid ->
+            try gen_server:call(erl_mcp_server_session_manager,
+                                {session_initialized, SessionId, Meta}, 5000)
+            catch
+                exit:{noproc, _} ->
+                    logger:warning("session ~s: manager not running for "
+                                   "persist", [SessionId]),
+                    ok;
+                exit:{timeout, _} ->
+                    logger:warning("session ~s: manager timed out for "
+                                   "persist", [SessionId]),
+                    ok;
+                exit:{shutdown, _} ->
+                    ok;
+                exit:{normal, _} ->
+                    ok
+            end
+    end.
 
 format_client_info(#implementation{name = N, version = V}) ->
     #{name => N, version => V}.

@@ -45,6 +45,7 @@ local-compile:
 	$(REBAR3) compile
 
 local-test: local-eunit local-ct local-dialyzer
+	$(REBAR3) cover
 
 local-eunit:
 	$(REBAR3) eunit
