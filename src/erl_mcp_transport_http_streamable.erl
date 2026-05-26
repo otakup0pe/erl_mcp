@@ -48,7 +48,8 @@ request(#handle{} = H, Message, Timeout) ->
         {ok, {{_, Status, _}, RespHeaders, RespBody}} ->
             NewSession = find_session_id(RespHeaders, H#handle.session_id),
             H1 = H#handle{session_id = NewSession},
-            handle_response(Status, RespBody, H1);
+            ContentType = proplists:get_value("content-type", RespHeaders, ""),
+            handle_response(Status, ContentType, RespBody, H1);
         {error, Reason} ->
             {error, {transport_error, Reason}, H}
     end.
@@ -75,12 +76,39 @@ close(#handle{}) ->
 update_auth(#handle{} = H, Auth) ->
     {ok, H#handle{auth = Auth}}.
 
-handle_response(Status, Body, H) when Status >= 200, Status < 300 ->
-    {ok, Body, H};
-handle_response(404, _Body, H) ->
+handle_response(Status, _CT, Body, H) when Status >= 200, Status < 300 ->
+    {ok, extract_body(_CT, Body), H};
+handle_response(404, _CT, _Body, H) ->
     {error, session_not_found, H#handle{session_id = undefined}};
-handle_response(Status, Body, H) ->
+handle_response(Status, _CT, Body, H) ->
     {error, {http_status, Status, Body}, H}.
+
+%% @private Extract JSON body, handling SSE-wrapped responses.
+%%
+%% Streamable HTTP servers may return `text/event-stream' in the POST
+%% response. In that case the JSON-RPC payload is inside the `data:'
+%% field of a `message' SSE event.
+extract_body("text/event-stream" ++ _, Body) ->
+    extract_sse_message(Body);
+extract_body(_, Body) ->
+    Body.
+
+extract_sse_message(Body) ->
+    Events = erl_mcp_protocol_sse:decode_events(Body),
+    case find_message_event(Events) of
+        {ok, Data} -> Data;
+        error -> Body  %% fallback: return raw body
+    end.
+
+find_message_event([]) ->
+    error;
+find_message_event([#{event := <<"message">>, data := Data} | _]) ->
+    {ok, Data};
+find_message_event([#{data := Data} | _]) ->
+    %% Events without explicit type default to "message"
+    {ok, Data};
+find_message_event([_ | Rest]) ->
+    find_message_event(Rest).
 
 build_headers(#handle{protocol_version = Proto,
                       auth = Auth,
