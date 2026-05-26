@@ -1,7 +1,7 @@
 -module(mock_session_store).
 -behaviour(erl_mcp_server_session_store).
 
--export([init/1, persist/3, lookup/2, remove/2, prune/2]).
+-export([init/1, persist/3, lookup/2, remove/2, prune/2, touch/2]).
 
 -define(TABLE, mock_session_store_table).
 
@@ -56,3 +56,13 @@ prune(MaxAgeSecs, State) ->
         end
     end, 0, All),
     {Pruned, State}.
+
+touch(SessionId, State) ->
+    Now = erlang:system_time(second),
+    case ets:lookup(?TABLE, SessionId) of
+        [{SessionId, Meta, CreatedAt, _OldLastSeen}] ->
+            ets:insert(?TABLE, {SessionId, Meta, CreatedAt, Now}),
+            {ok, State};
+        [] ->
+            {ok, State}
+    end.

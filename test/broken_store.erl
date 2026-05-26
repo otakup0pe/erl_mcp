@@ -4,7 +4,7 @@
 %% A store that can be configured to fail in various ways.
 %% Set failure modes via process dictionary or ETS before calling.
 
--export([init/1, persist/3, lookup/2, remove/2, prune/2]).
+-export([init/1, persist/3, lookup/2, remove/2, prune/2, touch/2]).
 -export([set_mode/1, set_mode/2, reset/0]).
 
 -define(TABLE, broken_store_table).
@@ -37,7 +37,7 @@ persist(SessionId, Meta, State) ->
     case get_mode(persist) of
         normal ->
             Now = erlang:system_time(second),
-            ets:insert(?TABLE, {SessionId, Meta, Now}),
+            ets:insert(?TABLE, {SessionId, Meta, Now, Now}),
             {ok, State};
         error_tuple ->
             {error, store_unavailable};
@@ -51,7 +51,7 @@ persist(SessionId, Meta, State) ->
         slow ->
             timer:sleep(6000),
             Now = erlang:system_time(second),
-            ets:insert(?TABLE, {SessionId, Meta, Now}),
+            ets:insert(?TABLE, {SessionId, Meta, Now, Now}),
             {ok, State}
     end.
 
@@ -59,7 +59,7 @@ lookup(SessionId, State) ->
     case get_mode(lookup) of
         normal ->
             case ets:lookup(?TABLE, SessionId) of
-                [{SessionId, Meta, _Ts}] ->
+                [{SessionId, Meta, _CreatedAt, _LastActive}] ->
                     {ok, Meta, State};
                 [] ->
                     {not_found, State}
@@ -86,6 +86,26 @@ remove(SessionId, State) ->
 
 prune(_MaxAgeSecs, State) ->
     {0, State}.
+
+touch(SessionId, State) ->
+    case get_mode(touch) of
+        normal ->
+            Now = erlang:system_time(second),
+            case ets:lookup(?TABLE, SessionId) of
+                [{SessionId, Meta, CreatedAt, _OldLastActive}] ->
+                    ets:insert(?TABLE, {SessionId, Meta, CreatedAt, Now}),
+                    {ok, State};
+                [] ->
+                    {ok, State}
+            end;
+        error_tuple ->
+            {error, store_unavailable};
+        crash ->
+            error({badmatch, {error, {file_error, "/tmp/gone", enospc}}});
+        table_gone ->
+            ets:insert(nonexistent_table, {SessionId, dummy}),
+            {ok, State}
+    end.
 
 get_mode(Op) ->
     case ets:info(?CTL) of

@@ -23,3 +23,8 @@
 
 -callback prune(MaxAgeSecs :: pos_integer(), State :: term()) ->
     {Pruned :: non_neg_integer(), State :: term()}.
+
+-callback touch(SessionId :: binary(), State :: term()) ->
+    {ok, State :: term()}.
+
+-optional_callbacks([touch/2]).

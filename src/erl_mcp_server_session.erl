@@ -467,13 +467,24 @@ find_in_flight_by_id(RequestId, InFlight) ->
     end, error, InFlight).
 
 reset_idle_timer(#state{idle_timer = OldTimer,
-                        idle_timeout = Timeout} = State) ->
+                        idle_timeout = Timeout,
+                        id = SessionId} = State) ->
     case OldTimer of
         undefined -> ok;
         _ -> erlang:cancel_timer(OldTimer)
     end,
     NewTimer = erlang:send_after(Timeout, self(), session_idle_timeout),
+    notify_activity(SessionId),
     State#state{idle_timer = NewTimer}.
+
+notify_activity(SessionId) ->
+    case whereis(erl_mcp_server_session_manager) of
+        undefined -> ok;
+        _Pid ->
+            try erl_mcp_server_session_manager:touch_session(SessionId)
+            catch _:_ -> ok
+            end
+    end.
 
 generate_session_id() ->
     Bytes = crypto:strong_rand_bytes(16),

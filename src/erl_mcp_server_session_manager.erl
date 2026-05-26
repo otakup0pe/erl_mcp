@@ -11,16 +11,20 @@
 
 -export([start_link/0]).
 -export([create_session/1, get_session/1, remove_session/1, list_sessions/0,
-         update_opts_template/1]).
+         update_opts_template/1, touch_session/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+
+-ifdef(TEST).
+-export([fire_on_rebuild/2]).
+-endif.
 
 -record(state, {
     sessions = #{} :: #{binary() => pid()},
     monitors = #{} :: #{reference() => binary()},
     store = undefined :: undefined | {module(), term()},
     session_opts_template = #{} :: map(),
-    on_rebuild = undefined :: undefined | fun((binary()) -> any())
+    on_rebuild = undefined :: undefined | fun((binary()) -> any()) | {module(), atom(), list()}
 }).
 
 start_link() ->
@@ -45,6 +49,11 @@ list_sessions() ->
 -spec update_opts_template(map()) -> ok.
 update_opts_template(Template) when is_map(Template) ->
     gen_server:cast(?MODULE, {update_opts_template, Template}).
+
+%% @doc Notify the store that a session is still active.
+-spec touch_session(binary()) -> ok.
+touch_session(SessionId) ->
+    gen_server:cast(?MODULE, {touch_session, SessionId}).
 
 init([]) ->
     StoreConfig = application:get_env(erl_mcp, session_store, undefined),
@@ -112,6 +121,9 @@ handle_call(_Request, _From, State) ->
 handle_cast({update_opts_template, Template}, State) ->
     logger:info("session_manager: opts template updated"),
     {noreply, State#state{session_opts_template = Template}};
+
+handle_cast({touch_session, SessionId}, State) ->
+    {noreply, store_touch(SessionId, State)};
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -213,6 +225,32 @@ store_remove(SessionId, #state{store = {Mod, StoreState}} = State) ->
             State
     end.
 
+store_touch(_SessionId, #state{store = undefined} = State) ->
+    State;
+store_touch(SessionId, #state{store = {Mod, StoreState}} = State) ->
+    case erlang:function_exported(Mod, touch, 2) of
+        true ->
+            try Mod:touch(SessionId, StoreState) of
+                {ok, StoreState1} ->
+                    State#state{store = {Mod, StoreState1}};
+                {error, Reason} ->
+                    logger:warning("session_manager: touch failed for ~s: ~p",
+                                   [SessionId, Reason]),
+                    State
+            catch
+                error:badarg ->
+                    logger:warning("session_manager: touch store table missing "
+                                   "for ~s", [SessionId]),
+                    State;
+                error:{badmatch, {error, DetsErr}} ->
+                    logger:warning("session_manager: touch storage error for "
+                                   "~s: ~p", [SessionId, DetsErr]),
+                    State
+            end;
+        false ->
+            State
+    end.
+
 try_rebuild(_SessionId, #state{store = undefined} = State) ->
     {error, not_found, State};
 try_rebuild(SessionId, #state{store = {Mod, StoreState},
@@ -264,6 +302,10 @@ maybe_remove_on_shutdown(_Reason, _SessionId, State) ->
     State.
 
 fire_on_rebuild(undefined, _SessionId) -> ok;
+fire_on_rebuild({M, F, A}, SessionId) when is_atom(M), is_atom(F), is_list(A) ->
+    try apply(M, F, [SessionId | A])
+    catch _:_ -> ok
+    end;
 fire_on_rebuild(Fun, SessionId) when is_function(Fun, 1) ->
     try Fun(SessionId)
     catch _:_ -> ok

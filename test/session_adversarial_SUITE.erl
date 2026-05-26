@@ -22,7 +22,8 @@ all() ->
      idle_timeout_cleans_store,
      rebuild_after_idle_no_zombie,
      promote_failure_cleans_monitor,
-     concurrent_get_session_same_id].
+     concurrent_get_session_same_id,
+     active_session_survives_prune].
 
 init_per_suite(Config) ->
     application:stop(erl_mcp),
@@ -33,16 +34,19 @@ end_per_suite(_Config) ->
 
 init_per_testcase(_TC, Config) ->
     broken_store:reset(),
+    catch ets:delete(test_memory_store_table),
     stop_manager(),
     application:set_env(erl_mcp, session_idle_timeout, 1800000),
     Config.
 
 end_per_testcase(_TC, _Config) ->
     broken_store:reset(),
+    catch ets:delete(test_memory_store_table),
     stop_manager(),
     application:unset_env(erl_mcp, session_store),
     application:unset_env(erl_mcp, session_opts_template),
     application:unset_env(erl_mcp, on_session_rebuild),
+    application:unset_env(erl_mcp, session_store_prune_interval),
     ok.
 
 %%--------------------------------------------------------------------
@@ -213,6 +217,56 @@ concurrent_get_session_same_id(_Config) ->
     %% Only one session in the manager
     ?assertEqual(1, length(erl_mcp_server_session_manager:list_sessions())),
     application:set_env(erl_mcp, session_idle_timeout, 1800000).
+
+%% Active session survives prune; inactive session gets pruned
+active_session_survives_prune(_Config) ->
+    %% Use test_memory_store which implements touch/2
+    application:set_env(erl_mcp, session_store, {test_memory_store, #{}}),
+    %% Short idle timeout (3s) and short prune interval (2s)
+    application:set_env(erl_mcp, session_idle_timeout, 3000),
+    application:set_env(erl_mcp, session_store_prune_interval, 2000),
+    ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{}),
+    ServerInfo = #implementation{name = <<"test-prune">>,
+                                 version = <<"1.0.0">>},
+    application:set_env(erl_mcp, session_opts_template,
+                        #{role => server,
+                          server_info => ServerInfo,
+                          server_capabilities => ServerCaps}),
+    {ok, MgrPid} = erl_mcp_server_session_manager:start_link(),
+    unlink(MgrPid),
+    %% Create and initialize a session
+    {ok, SessionId, Pid} = erl_mcp_server_session_manager:create_session(
+        #{role => server,
+          server_info => ServerInfo,
+          server_capabilities => ServerCaps}),
+    InitMsg = init_request(1),
+    {reply, _} = erl_mcp_server_session:handle_message(Pid, InitMsg),
+    ?assert(is_process_alive(Pid)),
+    %% Keep session active by sending periodic pings (every 1s for 5s)
+    %% This should keep the session alive past the 3s max_age
+    lists:foreach(fun(I) ->
+        timer:sleep(1000),
+        PingMsg = #jsonrpc_request{id = 100 + I, method = <<"ping">>,
+                                   params = #{}},
+        {reply, _} = erl_mcp_server_session:handle_message(Pid, PingMsg)
+    end, lists:seq(1, 5)),
+    %% 5s have passed — well past the 3s max_age from creation.
+    %% At least one prune cycle (2s interval) should have fired.
+    %% The session should still be alive because touch/2 kept
+    %% last_active current.
+    ?assert(is_process_alive(Pid)),
+    ?assertMatch({ok, Pid}, erl_mcp_server_session_manager:get_session(SessionId)),
+    %% Now stop sending messages and wait for idle timeout + prune
+    %% Idle timeout = 3s, then prune interval = 2s, so ~5s should be enough
+    timer:sleep(6000),
+    %% Session process should have died from idle timeout
+    ?assertNot(is_process_alive(Pid)),
+    %% Store entry should have been cleaned up
+    ?assertEqual({error, not_found},
+                 erl_mcp_server_session_manager:get_session(SessionId)),
+    %% Cleanup
+    application:set_env(erl_mcp, session_idle_timeout, 1800000),
+    application:unset_env(erl_mcp, session_store_prune_interval).
 
 %%--------------------------------------------------------------------
 %% Helpers
