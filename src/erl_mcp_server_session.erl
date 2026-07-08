@@ -12,7 +12,7 @@
 -include("erl_mcp.hrl").
 
 -export([start_link/1, start_link/2]).
--export([handle_message/2, send_request/3, send_notification/2]).
+-export([handle_message/2, handle_message/3, send_request/3, send_notification/2]).
 -export([get_state/1, get_capabilities/1, promote/2]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
@@ -33,7 +33,8 @@
     in_flight = #{} :: #{reference() => {term(), integer(), reference(), pid()}},
     idle_timeout :: pos_integer(),
     idle_timer :: undefined | reference(),
-    on_close :: undefined | fun((binary()) -> any())
+    on_close :: undefined | fun((binary()) -> any()),
+    req_ctx = #{} :: map()
 }).
 
 %% @doc Start an unregistered MCP session.
@@ -58,7 +59,15 @@ start_link(Name, Opts) ->
 -spec handle_message(pid(), term()) ->
     ok | {reply, term()} | {error, term()}.
 handle_message(Session, Message) ->
-    gen_server:call(Session, {handle_message, Message}, 300000).
+    handle_message(Session, Message, #{}).
+
+%% @doc Dispatch a message carrying a per-request context map (e.g.
+%% request-header-derived identity like `consumer_role'). ReqCtx is
+%% merged into the tool-handler Context UNDER `session_id'.
+-spec handle_message(pid(), term(), map()) ->
+    ok | {reply, term()} | {error, term()}.
+handle_message(Session, Message, ReqCtx) ->
+    gen_server:call(Session, {handle_message, Message, ReqCtx}, 300000).
 
 %% @doc Send an outbound JSON-RPC request to the remote peer.
 %%
@@ -117,8 +126,8 @@ init(Opts) ->
         idle_timer = Timer
     }}.
 
-handle_call({handle_message, Message}, From, State) ->
-    State1 = reset_idle_timer(State),
+handle_call({handle_message, Message, ReqCtx}, From, State) ->
+    State1 = reset_idle_timer(State#state{req_ctx = ReqCtx}),
     case dispatch(Message, From, State1) of
         {reply, Reply, NewState} ->
             {reply, {reply, Reply}, NewState};
@@ -316,7 +325,7 @@ dispatch(_, _From, State) ->
 spawn_handler(Handler, Params, From, Id, State) ->
     SessionPid = self(),
     Ref = make_ref(),
-    Context = #{session_id => State#state.id},
+    Context = (State#state.req_ctx)#{session_id => State#state.id},
     {Pid, MonRef} = spawn_monitor(fun() ->
         Result = try Handler(Params, Context) of
             {ok, ResultMap} ->

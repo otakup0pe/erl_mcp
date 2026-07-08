@@ -92,7 +92,8 @@ handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
     end,
     case erl_mcp_server_session_manager:create_session(SessionOpts) of
         {ok, SessionId, Pid} ->
-            case erl_mcp_server_session:handle_message(Pid, Msg) of
+            ReqCtx = request_context(Req0),
+            case erl_mcp_server_session:handle_message(Pid, Msg, ReqCtx) of
                 {reply, Reply} ->
                     {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode(Reply),
                     Req = cowboy_req:reply(200, #{
@@ -113,7 +114,8 @@ handle_single_message(#jsonrpc_request{method = <<"initialize">>} = Msg,
 handle_single_message(#jsonrpc_request{} = Msg, Req0, State) ->
     case get_or_create_session(Req0, State) of
         {ok, Pid, Req1} ->
-            case erl_mcp_server_session:handle_message(Pid, Msg) of
+            ReqCtx = request_context(Req1),
+            case erl_mcp_server_session:handle_message(Pid, Msg, ReqCtx) of
                 {reply, Reply} ->
                     {ok, RespBody} = erl_mcp_protocol_jsonrpc:encode(Reply),
                     Req = cowboy_req:reply(200, #{
@@ -140,9 +142,10 @@ handle_single_message(_, Req0, State) ->
 handle_batch(Messages, Req0, State) ->
     case get_or_create_session(Req0, State) of
         {ok, Pid, Req1} ->
+            ReqCtx = request_context(Req1),
             Replies = lists:filtermap(fun(Msg) ->
                 IsNotification = is_record(Msg, jsonrpc_notification),
-                case erl_mcp_server_session:handle_message(Pid, Msg) of
+                case erl_mcp_server_session:handle_message(Pid, Msg, ReqCtx) of
                     {reply, Reply} -> {true, Reply};
                     ok -> false;
                     {error, Reason} when not IsNotification ->
@@ -212,6 +215,15 @@ get_or_create_session(Req0, _State) ->
                 {ok, Pid} -> {ok, Pid, Req0};
                 {error, not_found} -> {error, Req0}
             end
+    end.
+
+%% @private Build the per-request context passed to tool handlers from
+%% request headers. Currently carries X-Consumer-Role for role-scoped
+%% delivery; empty map when the header is absent.
+request_context(Req) ->
+    case cowboy_req:header(<<"x-consumer-role">>, Req, undefined) of
+        undefined -> #{};
+        Role -> #{consumer_role => Role}
     end.
 
 %% @private

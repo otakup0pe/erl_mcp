@@ -10,6 +10,8 @@ REBAR3 ?= rebar3
 CHECKOUTS_OVERRIDE = docker-compose.checkouts.yml
 COMPOSE ?= docker compose -f docker-compose.test.yml -f $(CHECKOUTS_OVERRIDE)
 
+export BUILDX_BUILDER ?= default
+
 # All Erlang invocations run in docker by default. The local-* targets
 # exist for power users who already have OTP 27 + rebar3 on the host.
 

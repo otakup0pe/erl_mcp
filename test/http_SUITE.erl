@@ -13,6 +13,7 @@
     post_invalid_json_returns_parse_error/1,
     post_tools_list/1,
     post_tools_call/1,
+    post_tools_call_consumer_role/1,
     post_large_body_tools_call/1,
     post_oversized_body/1,
     post_handler_exception/1,
@@ -28,6 +29,7 @@ all() -> [
     post_invalid_json_returns_parse_error,
     post_tools_list,
     post_tools_call,
+    post_tools_call_consumer_role,
     post_large_body_tools_call,
     post_oversized_body,
     post_handler_exception,
@@ -70,6 +72,21 @@ init_per_testcase(_TC, Config) ->
         error(deliberate_test_crash)
     end,
     ok = erl_mcp_server_tool_registry:register_tool(CrashTool, CrashHandler),
+    RoleEchoTool = #tool{
+        name = <<"role_echo">>,
+        description = <<"Echoes consumer_role from context">>,
+        input_schema = #{<<"type">> => <<"object">>}
+    },
+    RoleEchoHandler = fun(_Args, Context) ->
+        Role = maps:get(consumer_role, Context, undefined),
+        RoleBin = case Role of
+            undefined -> <<"undefined">>;
+            V -> V
+        end,
+        {ok, #{<<"content">> => [erl_mcp_protocol_content:to_map(
+            erl_mcp_protocol_content:text(RoleBin))]}}
+    end,
+    ok = erl_mcp_server_tool_registry:register_tool(RoleEchoTool, RoleEchoHandler),
     ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true}
     }),
@@ -187,6 +204,24 @@ post_tools_call(Config) ->
     ?assertEqual(1, length(Content)),
     [C] = Content,
     ?assertEqual(<<"hi there">>, maps:get(<<"text">>, C)).
+
+post_tools_call_consumer_role(Config) ->
+    BaseUrl = proplists:get_value(base_url, Config),
+    SessionId = do_initialize(BaseUrl),
+    CallReq = erl_mcp_protocol_jsonrpc:request(10, <<"tools/call">>, #{
+        <<"name">> => <<"role_echo">>,
+        <<"arguments">> => #{}
+    }),
+    ExtraHeaders = [{"mcp-session-id", SessionId},
+                    {"x-consumer-role", "test-role"}],
+    {ok, Body, _H, 200} = post_json_full(BaseUrl ++ "/mcp", CallReq, ExtraHeaders),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
+    ?assertMatch(#jsonrpc_response{id = 10}, Decoded),
+    Result = Decoded#jsonrpc_response.result,
+    Content = maps:get(<<"content">>, Result),
+    ?assertEqual(1, length(Content)),
+    [C] = Content,
+    ?assertEqual(<<"test-role">>, maps:get(<<"text">>, C)).
 
 post_large_body_tools_call(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
