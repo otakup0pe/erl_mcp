@@ -18,7 +18,7 @@ Erlang/OTP implementation of the [Model Context Protocol](https://modelcontextpr
 Add the dependency to `rebar.config`:
 
 ```erlang
-{deps, [{erl_mcp, "0.1.0"}]}.
+{deps, [{erl_mcp, "0.2.0"}]}.
 ```
 
 ### Server: register a tool and start the HTTP handler

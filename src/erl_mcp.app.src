@@ -1,6 +1,6 @@
 {application, erl_mcp, [
     {description, "Erlang implementation of the Model Context Protocol (MCP)"},
-    {vsn, "0.1.0"},
+    {vsn, "0.2.0"},
     {registered, [
         erl_mcp_server_session_manager,
         erl_mcp_server_tool_registry
