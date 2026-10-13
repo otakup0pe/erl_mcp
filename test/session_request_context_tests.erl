@@ -62,6 +62,25 @@ consumer_role_reaches_tool_handler_test() ->
         teardown_session(Ctx)
     end.
 
+%% A middleware-authenticated principal survives the same threading, and
+%% stays distinct from the unverified consumer_role travelling with it.
+auth_principal_reaches_tool_handler_test() ->
+    PrincipalHandler = fun(_Args, Ctx) ->
+        Principal = maps:get(auth_principal, Ctx, null),
+        {ok, #{<<"content">> => [#{<<"type">> => <<"text">>,
+                                   <<"text">> => Principal}]}}
+    end,
+    Ctx = setup_session(PrincipalHandler),
+    {Pid, _} = Ctx,
+    try
+        ?assertEqual(<<"principal-from-middleware">>,
+                     call_whoami(Pid,
+                                 #{auth_principal => <<"principal-from-middleware">>,
+                                   consumer_role => <<"unverified-role">>}))
+    after
+        teardown_session(Ctx)
+    end.
+
 %% Empty ReqCtx yields today's context (no consumer_role -> null).
 empty_req_ctx_has_no_role_test() ->
     Ctx = setup_session(role_echo_handler()),

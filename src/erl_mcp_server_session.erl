@@ -61,9 +61,10 @@ start_link(Name, Opts) ->
 handle_message(Session, Message) ->
     handle_message(Session, Message, #{}).
 
-%% @doc Dispatch a message carrying a per-request context map (e.g.
-%% request-header-derived identity like `consumer_role'). ReqCtx is
-%% merged into the tool-handler Context UNDER `session_id'.
+%% @doc Dispatch a message carrying a per-request context map (e.g. the
+%% unverified `consumer_role' header, or an `auth_principal' resolved by
+%% an authenticating transport layer). ReqCtx is merged into the
+%% tool-handler Context UNDER `session_id'.
 -spec handle_message(pid(), term(), map()) ->
     ok | {reply, term()} | {error, term()}.
 handle_message(Session, Message, ReqCtx) ->

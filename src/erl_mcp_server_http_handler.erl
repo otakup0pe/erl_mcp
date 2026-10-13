@@ -217,13 +217,22 @@ get_or_create_session(Req0, _State) ->
             end
     end.
 
-%% @private Build the per-request context passed to tool handlers from
-%% request headers. Currently carries X-Consumer-Role for role-scoped
-%% delivery; empty map when the header is absent.
+%% @private Build the per-request context passed to tool handlers.
+%%
+%% `consumer_role' is the raw X-Consumer-Role header: caller-supplied
+%% and unverified, useful only for role-scoped delivery. `auth_principal'
+%% is the identity a preceding cowboy middleware authenticated, and is
+%% `undefined' when no middleware set one. An authorization decision must
+%% use `auth_principal'; the two must never be conflated.
+%%
+%% Cowboy exposes no accessor for middleware-set values -- `cowboy_req:req()'
+%% is an open map (`_ => _') that middlewares are expected to store on --
+%% so the stash is read directly.
 request_context(Req) ->
+    Ctx = #{auth_principal => maps:get(auth_principal, Req, undefined)},
     case cowboy_req:header(<<"x-consumer-role">>, Req, undefined) of
-        undefined -> #{};
-        Role -> #{consumer_role => Role}
+        undefined -> Ctx;
+        Role -> Ctx#{consumer_role => Role}
     end.
 
 %% @private

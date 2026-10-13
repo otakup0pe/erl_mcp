@@ -14,6 +14,8 @@
     post_tools_list/1,
     post_tools_call/1,
     post_tools_call_consumer_role/1,
+    post_tools_call_auth_principal/1,
+    post_tools_call_without_auth_middleware/1,
     post_large_body_tools_call/1,
     post_oversized_body/1,
     post_handler_exception/1,
@@ -30,6 +32,8 @@ all() -> [
     post_tools_list,
     post_tools_call,
     post_tools_call_consumer_role,
+    post_tools_call_auth_principal,
+    post_tools_call_without_auth_middleware,
     post_large_body_tools_call,
     post_oversized_body,
     post_handler_exception,
@@ -77,16 +81,15 @@ init_per_testcase(_TC, Config) ->
         description = <<"Echoes consumer_role from context">>,
         input_schema = #{<<"type">> => <<"object">>}
     },
-    RoleEchoHandler = fun(_Args, Context) ->
-        Role = maps:get(consumer_role, Context, undefined),
-        RoleBin = case Role of
-            undefined -> <<"undefined">>;
-            V -> V
-        end,
-        {ok, #{<<"content">> => [erl_mcp_protocol_content:to_map(
-            erl_mcp_protocol_content:text(RoleBin))]}}
-    end,
-    ok = erl_mcp_server_tool_registry:register_tool(RoleEchoTool, RoleEchoHandler),
+    ok = erl_mcp_server_tool_registry:register_tool(
+        RoleEchoTool, ctx_echo_handler(consumer_role)),
+    PrincipalEchoTool = #tool{
+        name = <<"principal_echo">>,
+        description = <<"Echoes auth_principal from context">>,
+        input_schema = #{<<"type">> => <<"object">>}
+    },
+    ok = erl_mcp_server_tool_registry:register_tool(
+        PrincipalEchoTool, ctx_echo_handler(auth_principal)),
     ServerCaps = erl_mcp_protocol_capability:server_capabilities(#{
         tools => #{list_changed => true}
     }),
@@ -109,7 +112,8 @@ init_per_testcase(_TC, Config) ->
         #{env => #{dispatch => Dispatch}}),
     Port = ranch:get_port(test_mcp_listener),
     BaseUrl = "http://localhost:" ++ integer_to_list(Port),
-    [{base_url, BaseUrl}, {mgr_pid, MgrPid}, {reg_pid, RegPid} | Config].
+    [{base_url, BaseUrl}, {dispatch, Dispatch},
+     {mgr_pid, MgrPid}, {reg_pid, RegPid} | Config].
 
 end_per_testcase(_TC, Config) ->
     cowboy:stop_listener(test_mcp_listener),
@@ -223,6 +227,43 @@ post_tools_call_consumer_role(Config) ->
     [C] = Content,
     ?assertEqual(<<"test-role">>, maps:get(<<"text">>, C)).
 
+%% A middleware-authenticated principal reaches the tool context, and the
+%% unverified consumer_role header keeps working alongside it.
+post_tools_call_auth_principal(Config) ->
+    Dispatch = proplists:get_value(dispatch, Config),
+    {ok, _} = cowboy:start_clear(test_mcp_auth_listener, [{port, 0}], #{
+        env => #{dispatch => Dispatch},
+        middlewares => [cowboy_router, mock_auth_middleware, cowboy_handler]
+    }),
+    try
+        Port = ranch:get_port(test_mcp_auth_listener),
+        BaseUrl = "http://localhost:" ++ integer_to_list(Port),
+        SessionId = do_initialize(BaseUrl),
+        Headers = [{"mcp-session-id", SessionId},
+                   {"x-consumer-role", "test-role"}],
+        ?assertEqual(mock_auth_middleware:principal(),
+                     call_echo_tool(BaseUrl, <<"principal_echo">>, 20, Headers)),
+        ?assertEqual(<<"test-role">>,
+                     call_echo_tool(BaseUrl, <<"role_echo">>, 21, Headers))
+    after
+        cowboy:stop_listener(test_mcp_auth_listener)
+    end.
+
+%% No authenticating middleware: the key is present and clearly absent,
+%% never an empty binary, and consumer_role is unaffected.
+post_tools_call_without_auth_middleware(Config) ->
+    BaseUrl = proplists:get_value(base_url, Config),
+    SessionId = do_initialize(BaseUrl),
+    Headers = [{"mcp-session-id", SessionId},
+               {"x-consumer-role", "test-role"}],
+    ?assertEqual(<<"undefined">>,
+                 call_echo_tool(BaseUrl, <<"principal_echo">>, 22, Headers)),
+    ?assertEqual(<<"test-role">>,
+                 call_echo_tool(BaseUrl, <<"role_echo">>, 23, Headers)),
+    NoRoleHeaders = [{"mcp-session-id", SessionId}],
+    ?assertEqual(<<"absent">>,
+                 call_echo_tool(BaseUrl, <<"role_echo">>, 24, NoRoleHeaders)).
+
 post_large_body_tools_call(Config) ->
     BaseUrl = proplists:get_value(base_url, Config),
     SessionId = do_initialize(BaseUrl),
@@ -300,6 +341,30 @@ do_initialize(BaseUrl) ->
     }),
     {ok, _Body, Headers} = post_json(BaseUrl ++ "/mcp", InitReq),
     proplists:get_value("mcp-session-id", Headers).
+
+%% Tool handler echoing one context key, distinguishing a key that is
+%% missing from one explicitly carrying `undefined'.
+ctx_echo_handler(Key) ->
+    fun(_Args, Context) ->
+        Text = case maps:find(Key, Context) of
+            error -> <<"absent">>;
+            {ok, undefined} -> <<"undefined">>;
+            {ok, Value} -> Value
+        end,
+        {ok, #{<<"content">> => [erl_mcp_protocol_content:to_map(
+            erl_mcp_protocol_content:text(Text))]}}
+    end.
+
+call_echo_tool(BaseUrl, ToolName, Id, Headers) ->
+    CallReq = erl_mcp_protocol_jsonrpc:request(Id, <<"tools/call">>, #{
+        <<"name">> => ToolName,
+        <<"arguments">> => #{}
+    }),
+    {ok, Body, _H, 200} = post_json_full(BaseUrl ++ "/mcp", CallReq, Headers),
+    {ok, Decoded} = erl_mcp_protocol_jsonrpc:decode(Body),
+    ?assertMatch(#jsonrpc_response{id = Id}, Decoded),
+    [Content] = maps:get(<<"content">>, Decoded#jsonrpc_response.result),
+    maps:get(<<"text">>, Content).
 
 stop_if_alive(Name) ->
     case whereis(Name) of
