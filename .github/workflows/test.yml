@@ -10,7 +10,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     container:
-      image: erlang:27-slim
+      image: erlang:27.3.4.9-slim
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install rebar3
         run: |
-          curl -fsSL https://github.com/erlang/rebar3/releases/latest/download/rebar3 -o /usr/local/bin/rebar3
+          curl -fsSL https://github.com/erlang/rebar3/releases/download/3.28.0/rebar3 -o /usr/local/bin/rebar3
           chmod +x /usr/local/bin/rebar3
 
       - name: Run tests

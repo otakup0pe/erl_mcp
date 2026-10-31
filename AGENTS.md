@@ -18,7 +18,8 @@ make local-ct      # common_test only
 make dialyzer      # dialyzer
 ```
 
-rebar3 is not vendored; the Docker image builds it from source.
+rebar3 is pinned to the published 3.28.0 release escript; the Docker image
+and CI install that same pinned version.
 
 ## Public API
 
