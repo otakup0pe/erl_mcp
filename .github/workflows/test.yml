@@ -100,8 +100,15 @@ jobs:
         run: |
           set -e
           python -m pip install avakas==3.2.0
+          before=$(avakas show . --flavor erlang)
           avakas bump . auto --branch=mainline --flavor erlang
           version=$(avakas show . --flavor erlang)
+          # An unchanged version means no release marker since the last
+          # release, so there is no new tag to publish against.
+          if [ "$version" = "$before" ]; then
+            echo "No release marker since $before, nothing to publish"
+            exit 0
+          fi
           if gh release view "$version" > /dev/null 2>&1; then
             echo "Release $version already exists, nothing to publish"
             exit 0
