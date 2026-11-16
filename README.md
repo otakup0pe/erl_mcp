@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/otakup0pe/erl_mcp/actions/workflows/test.yml/badge.svg)](https://github.com/otakup0pe/erl_mcp/actions/workflows/test.yml)
 [![Maintenance](https://img.shields.io/maintenance/yes/2026.svg)](https://github.com/otakup0pe/erl_mcp)
+[![Release](https://img.shields.io/github/v/release/otakup0pe/erl_mcp)](https://github.com/otakup0pe/erl_mcp/releases)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Erlang/OTP implementation of the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP).
@@ -15,11 +16,8 @@ Erlang/OTP implementation of the [Model Context Protocol](https://modelcontextpr
 
 ## Quick Start
 
-Add the dependency to `rebar.config`:
-
-```erlang
-{deps, [{erl_mcp, "0.2.0"}]}.
-```
+Add `erl_mcp` to your `rebar.config` deps, picking a version from
+[releases](https://github.com/otakup0pe/erl_mcp/releases).
 
 ### Server: register a tool and start the HTTP handler
 
