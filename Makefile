@@ -3,12 +3,18 @@ ROOT_DIR:=$(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 .PHONY: all compile docker-compile local-compile \
         test docker-test local-test local-eunit local-ct \
         dialyzer docker-dialyzer local-dialyzer \
-        shell docker-shell local-shell \
+        shell docker-shell local-shell lint-secrets lint-secrets-staged \
         docker-build resolve-checkouts dev-upgrade clean
 
 REBAR3 ?= rebar3
 CHECKOUTS_OVERRIDE = docker-compose.checkouts.yml
 COMPOSE ?= docker compose -f docker-compose.test.yml -f $(CHECKOUTS_OVERRIDE)
+GITLEAKS_IMAGE ?= ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+GITLEAKS_MODE ?= git
+GITLEAKS_SOURCE ?= .
+# `git` mode reads COMMITS, so it cannot see staged-but-uncommitted content.
+# lint-secrets-staged overrides this with the documented staged invocation.
+GITLEAKS_FLAGS ?=
 
 export BUILDX_BUILDER ?= default
 
@@ -87,6 +93,23 @@ dev-upgrade: resolve-checkouts
 	@rc=0; sh scripts/verify-erlang-lock --since _build/rebar-lock.before $(DEP) || rc=$$?; \
 		rm -f _build/rebar-lock.before; \
 		exit $$rc
+
+lint-secrets:
+	docker run --rm \
+		--user "$$(id -u):$$(id -g)" \
+		--network none \
+		--read-only \
+		--cap-drop=ALL \
+		--tmpfs /tmp:rw,noexec,nosuid,size=16m \
+		-v "$(ROOT_DIR):/repo:ro" \
+		-w /repo \
+		$(GITLEAKS_IMAGE) $(GITLEAKS_MODE) $(GITLEAKS_SOURCE) $(GITLEAKS_FLAGS) --redact --no-banner --verbose
+
+lint-secrets-staged: GITLEAKS_FLAGS := --pre-commit --staged
+lint-secrets-staged: lint-secrets
+
+# No `pre-commit' target: the managed git hook already runs the staged secret
+# scan, and with nothing else to add here the hook falls through to `test'.
 
 clean:
 	rm -rf _build $(CHECKOUTS_OVERRIDE)
